@@ -94,6 +94,12 @@ class SpeculativeConfig:
     draft_tensor_parallel_size: int | None = Field(default=None, ge=1)
     """The degree of the tensor parallelism for the draft model. Can only be 1
     or the same as the target model's tensor parallel size."""
+    draft_pipeline_parallel_size: int | None = Field(default=None, ge=1)
+    """The degree of the pipeline parallelism for the draft model. Can only be 1
+    or the same as the target model's pipeline parallel size. Defaults to 1 so
+    that a small draft (e.g. a single-layer MTP module) runs on one pipeline
+    stage while the target uses PP>1, which is what enables PP + speculative
+    decoding without the draft tripping the SupportsPP guard."""
     tensor_parallel_size: int | None = None
     """Users should pass "draft_tensor_parallel_size". This parameter's purpose is to
     warn users when they mistakenly provide the wrong argument."""
@@ -793,6 +799,13 @@ class SpeculativeConfig:
                     )
                 )
 
+                self.draft_pipeline_parallel_size = (
+                    SpeculativeConfig._verify_and_get_draft_pp(
+                        self.target_parallel_config,
+                        self.draft_pipeline_parallel_size,
+                    )
+                )
+
                 self.draft_model_config.max_model_len = (
                     SpeculativeConfig._maybe_override_draft_max_model_len(
                         self.max_model_len,
@@ -803,7 +816,9 @@ class SpeculativeConfig:
 
                 self.draft_parallel_config = (
                     SpeculativeConfig.create_draft_parallel_config(
-                        self.target_parallel_config, self.draft_tensor_parallel_size
+                        self.target_parallel_config,
+                        self.draft_tensor_parallel_size,
+                        self.draft_pipeline_parallel_size,
                     )
                 )
         return self
@@ -943,16 +958,50 @@ class SpeculativeConfig:
         self.draft_model_config._architecture = arch
 
     @staticmethod
+    def _verify_and_get_draft_pp(
+        target_parallel_config: ParallelConfig,
+        speculative_draft_pipeline_parallel_size: int | None,
+    ) -> int:
+        """Verify and normalize the draft model's pipeline-parallel size.
+
+        The draft (e.g. a single-layer MTP module) is small, so by default it
+        runs on a single pipeline stage (draft_pp=1) regardless of the target's
+        pipeline_parallel_size. Placing the draft on one stage is what lets a
+        PP>1 target use speculative decoding without the draft tripping the
+        ``SupportsPP`` guard. Only 1 or the target's pp size are permitted,
+        mirroring ``_verify_and_get_draft_tp``.
+        """
+        if speculative_draft_pipeline_parallel_size is None:
+            speculative_draft_pipeline_parallel_size = 1
+        elif speculative_draft_pipeline_parallel_size not in (
+            1,
+            target_parallel_config.pipeline_parallel_size,
+        ):
+            raise ValueError(
+                f"{speculative_draft_pipeline_parallel_size=} cannot be "
+                f"other value than 1 or target model pipeline_parallel_size"
+            )
+        return speculative_draft_pipeline_parallel_size
+
+    @staticmethod
     def create_draft_parallel_config(
         target_parallel_config: ParallelConfig,
         speculative_draft_tensor_parallel_size: int,
+        speculative_draft_pipeline_parallel_size: int | None = None,
     ) -> ParallelConfig:
         """Create a parallel config for use by the draft worker.
 
-        This is mostly a copy of the target parallel config, except the tp_size.
+        This is mostly a copy of the target parallel config, except the tp_size
+        and (optionally) the pp_size. When
+        ``speculative_draft_pipeline_parallel_size`` is None the draft inherits
+        the target's pipeline_parallel_size (legacy behavior).
         """
+        if speculative_draft_pipeline_parallel_size is None:
+            speculative_draft_pipeline_parallel_size = (
+                target_parallel_config.pipeline_parallel_size
+            )
         draft_parallel_config = ParallelConfig(
-            pipeline_parallel_size=target_parallel_config.pipeline_parallel_size,
+            pipeline_parallel_size=speculative_draft_pipeline_parallel_size,
             tensor_parallel_size=speculative_draft_tensor_parallel_size,
             distributed_executor_backend=target_parallel_config.distributed_executor_backend,
             max_parallel_loading_workers=target_parallel_config.max_parallel_loading_workers,

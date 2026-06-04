@@ -31,6 +31,7 @@ from vllm.transformers_utils.configs.qwen3_5_moe import Qwen3_5MoeTextConfig
 from .interfaces import (
     MultiModalEmbeddings,
     SupportsMultiModal,
+    SupportsPP,
     _require_is_multimodal,
 )
 from .utils import (
@@ -346,7 +347,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         "hidden_states": 0,
     }
 )
-class Qwen3_5MTP(nn.Module, SupportsMultiModal):
+class Qwen3_5MTP(nn.Module, SupportsMultiModal, SupportsPP):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -372,6 +373,12 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal):
         self.config = config
         self.model = Qwen3_5MultiTokenPredictor(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "mtp")
+        )
+        # Expose the inner predictor's PP intermediate-tensor factory so this
+        # wrapper satisfies the SupportsPP interface (Design B: the draft is
+        # sharded across the same PP stages as the target).
+        self.make_empty_intermediate_tensors = (
+            self.model.make_empty_intermediate_tensors
         )
 
         if get_pp_group().is_last_rank:
