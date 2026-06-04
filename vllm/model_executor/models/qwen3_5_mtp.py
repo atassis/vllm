@@ -68,6 +68,21 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
 
         self.config = config
 
+        # Design C (standalone draft): when the draft runs with its own
+        # pipeline_parallel_size == 1 (decoupled from a target PP>1), it executes
+        # only on the last global PP rank. There `get_pp_group().is_first_rank`
+        # is False, so the forward would wrongly take the inter-stage path and
+        # demand intermediate_tensors the proposer never supplies. This flag makes
+        # the forward behave as first==last (embed -> fc -> layer -> norm). The
+        # draft's embed_tokens is already weight-loaded on the last rank and the
+        # target hidden state is resident there, so no cross-stage traffic is
+        # needed.
+        spec_config = vllm_config.speculative_config
+        self.standalone_draft = (
+            spec_config is not None
+            and spec_config.draft_pipeline_parallel_size == 1
+        )
+
         self.vocab_size = config.vocab_size
 
         self.mtp_start_layer_idx = config.num_hidden_layers
@@ -130,7 +145,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         inputs_embeds: torch.Tensor | None = None,
         spec_step_idx: int = 0,
     ) -> torch.Tensor:
-        if get_pp_group().is_first_rank:
+        if self.standalone_draft or get_pp_group().is_first_rank:
             if inputs_embeds is None:
                 inputs_embeds = self.embed_input_ids(input_ids)
             assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
@@ -151,7 +166,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             residual=residual,
         )
 
-        if not get_pp_group().is_last_rank:
+        if not (self.standalone_draft or get_pp_group().is_last_rank):
             return IntermediateTensors(
                 {"hidden_states": hidden_states, "residual": residual}
             )
