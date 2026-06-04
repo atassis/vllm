@@ -100,6 +100,15 @@ class SpeculativeConfig:
     that a small draft (e.g. a single-layer MTP module) runs on one pipeline
     stage while the target uses PP>1, which is what enables PP + speculative
     decoding without the draft tripping the SupportsPP guard."""
+    draft_embed_quant_bits: int | None = None
+    """Optional low-bit quantization for the draft model's vocab embedding (4 or
+    8; None = full precision). A speculative draft loads its own copy of the
+    target's (often huge) vocab embedding on the last PP rank; quantizing it
+    saves VRAM there. Because rejection sampling makes the final output
+    independent of draft quality, this is correctness-safe: it only affects the
+    draft acceptance rate, never the emitted tokens. Applied only on the PP
+    separate-load path (draft has its own embedding); ignored when the draft
+    shares the target's embedding (no PP)."""
     tensor_parallel_size: int | None = None
     """Users should pass "draft_tensor_parallel_size". This parameter's purpose is to
     warn users when they mistakenly provide the wrong argument."""
@@ -806,6 +815,12 @@ class SpeculativeConfig:
                     )
                 )
 
+                self.draft_embed_quant_bits = (
+                    SpeculativeConfig._verify_draft_embed_quant_bits(
+                        self.draft_embed_quant_bits,
+                    )
+                )
+
                 self.draft_model_config.max_model_len = (
                     SpeculativeConfig._maybe_override_draft_max_model_len(
                         self.max_model_len,
@@ -982,6 +997,22 @@ class SpeculativeConfig:
                 f"other value than 1 or target model pipeline_parallel_size"
             )
         return speculative_draft_pipeline_parallel_size
+
+    @staticmethod
+    def _verify_draft_embed_quant_bits(bits: int | None) -> int | None:
+        """Validate the draft vocab-embedding quantization bit-width.
+
+        ``None`` keeps the draft embedding at full precision; ``8`` and ``4``
+        select int8 / int4 (per-row symmetric). Any other value is rejected.
+        """
+        if bits is None:
+            return None
+        if bits not in (4, 8):
+            raise ValueError(
+                f"draft_embed_quant_bits={bits} is not supported; "
+                "use 4, 8, or None (full precision)."
+            )
+        return bits
 
     @staticmethod
     def create_draft_parallel_config(
