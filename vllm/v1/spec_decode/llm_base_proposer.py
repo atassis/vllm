@@ -17,9 +17,6 @@ from vllm.distributed.parallel_state import get_pp_group
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
-from vllm.model_executor.layers.quantized_draft_embedding import (
-    QuantizedVocabEmbedding,
-)
 from vllm.model_executor.model_loader import get_model
 from vllm.model_executor.models import supports_multimodal
 from vllm.model_executor.models.deepseek_eagle3 import Eagle3DeepseekV2ForCausalLM
@@ -1259,7 +1256,6 @@ class SpecDecodeBaseProposer:
 
         self._maybe_share_embeddings(target_language_model)
         self._maybe_share_lm_head(target_language_model)
-        self._maybe_quantize_draft_embed()
 
         if (
             self.parallel_drafting
@@ -1275,37 +1271,6 @@ class SpecDecodeBaseProposer:
                 )
             else:
                 self.parallel_drafting_hidden_state_tensor.copy_(flat_mask)
-
-    def _maybe_quantize_draft_embed(self) -> None:
-        """Quantize the draft's own vocab embedding to save last-rank VRAM (A1c).
-
-        A speculative draft loads its own copy of the target's (often huge) vocab
-        embedding. Under PP the draft keeps that copy on the last rank (sharing is
-        skipped — see ``_maybe_share_embeddings``), so quantizing it frees VRAM
-        exactly where Design C concentrates the draft. Correctness-safe: rejection
-        sampling makes the final output independent of draft quality, so a lossy
-        embedding only lowers the acceptance rate, never changes the tokens.
-
-        Applied only on the PP separate-load path. Under ``world_size == 1`` the
-        draft embedding is shared with the target, so mutating it would corrupt
-        the target — skip.
-        """
-        bits = self.vllm_config.speculative_config.draft_embed_quant_bits
-        if bits is None:
-            return
-        if get_pp_group().world_size == 1:
-            return
-        inner = getattr(self.model, "model", None)
-        old = getattr(inner, "embed_tokens", None)
-        weight = getattr(old, "weight", None)
-        if weight is None:
-            return
-        inner.embed_tokens = QuantizedVocabEmbedding(weight.data, bits=bits)
-        logger.info(
-            "Quantized draft vocab embedding to int%d (per-row symmetric) "
-            "to reduce last-rank memory.",
-            bits,
-        )
 
     def _maybe_share_embeddings(self, target_language_model: nn.Module) -> None:
         """

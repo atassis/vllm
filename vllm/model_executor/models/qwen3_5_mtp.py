@@ -17,6 +17,9 @@ from vllm.model_executor.layers.fused_moe import (
 )
 from vllm.model_executor.layers.linear import ColumnParallelLinear
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.layers.quantized_draft_embedding import (
+    QuantizedVocabEmbedding,
+)
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -79,8 +82,7 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         # needed.
         spec_config = vllm_config.speculative_config
         self.standalone_draft = (
-            spec_config is not None
-            and spec_config.draft_pipeline_parallel_size == 1
+            spec_config is not None and spec_config.draft_pipeline_parallel_size == 1
         )
 
         self.vocab_size = config.vocab_size
@@ -88,10 +90,27 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
         self.mtp_start_layer_idx = config.num_hidden_layers
         self.num_mtp_layers = getattr(config, "mtp_num_hidden_layers", 1)
 
-        self.embed_tokens = VocabParallelEmbedding(
-            self.vocab_size,
-            config.hidden_size,
+        quant_bits = (
+            spec_config.draft_embed_quant_bits if spec_config is not None else None
         )
+        if quant_bits is not None:
+            # A1c: under PP the draft holds its own copy of the (huge) vocab
+            # embedding on the last rank. Quantize it at LOAD time (int storage
+            # allocated here; the checkpoint fp16 weight is quantized as it loads)
+            # so the full fp16 [vocab, hidden] table never materializes on the GPU
+            # — a post-load swap OOMs at the load peak. Correctness is unaffected
+            # (rejection sampling); only the acceptance rate may drop.
+            self.embed_tokens = QuantizedVocabEmbedding(
+                self.vocab_size,
+                config.hidden_size,
+                bits=quant_bits,
+                params_dtype=torch.get_default_dtype(),
+            )
+        else:
+            self.embed_tokens = VocabParallelEmbedding(
+                self.vocab_size,
+                config.hidden_size,
+            )
 
         # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is
         # missing from hf_quant_config.json exclude_modules. Force unquantized.
