@@ -415,9 +415,20 @@ class Qwen3_5MTP(nn.Module, SupportsMultiModal, SupportsPP):
             self.model.make_empty_intermediate_tensors
         )
 
+        spec_config = vllm_config.speculative_config
+        skip_lm_head_alloc = (
+            spec_config is not None and spec_config.draft_embed_quant_bits is not None
+        )
         if get_pp_group().is_last_rank:
             if config.tie_word_embeddings:
                 self.lm_head = self.model.embed_tokens
+            elif skip_lm_head_alloc:
+                # A1c memory mode: the MTP draft's lm_head is always shared with
+                # the target's (same last rank) by the proposer's
+                # _maybe_share_lm_head. Materializing a full fp16 ParallelLMHead
+                # (e.g. 2.37 GiB for Qwen3.5) here only to discard it OOMs at the
+                # load peak — use a placeholder; sharing fills it.
+                self.lm_head = PPMissingLayer()
             else:
                 self.lm_head = ParallelLMHead(
                     config.vocab_size,
