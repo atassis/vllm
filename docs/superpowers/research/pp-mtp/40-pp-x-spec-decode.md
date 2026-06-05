@@ -911,3 +911,21 @@ greedy-equiv class is three instances of one invariant: *the non-last PP rank mu
 the sampler's per-request valid/accepted count (broadcast) and apply it to num_computed
 _tokens (positions/KV) AND num_accepted_tokens (mamba/GDN state).* (Caveat: align/all mamba
 cache modes' non-last postprocess untested; "none" is the default and verified.)
+
+### s9 [[CMP]] benchmark — PP=2+MTP spec vs baseline (tokens/s + acceptance)
+
+Clean runs (no probes/blocking, `disable_log_stats=False` for SpecDecoding metrics):
+
+| Model | Config | Baseline tok/s | Spec tok/s | Speedup | Draft accept | Mean accept len | Greedy-equiv |
+|---|---|---:|---:|---:|---:|---:|---|
+| MiMo-7B (pure attn) | PP=2, no offload, 200 tok | 22.80 | 39.67 | **1.74×** | 93.8% | 1.94 | 5/5 @40; near-tie floor @200 |
+| Qwen3.5-27B (hybrid GDN) | PP=2, cpu_offload=3, int4 draft, 50 tok | 1.83 | 3.44 | **1.88×** | 94.7% | 1.95 | 5/5 @40 |
+
+**Read-out:** the MTP draft is highly accurate on both models (~94% draft acceptance, mean
+acceptance length ~1.95 of a max 2.0 at num_spec=1) → near-2× theoretical, realized 1.74–1.88×
+(the gap is the draft-forward + verify per-step overhead). 27B absolute tok/s is cpu_offload
+memory-wall-bound (weights stream CPU→GPU each forward — hits BOTH baseline and spec equally, so
+the 1.88× RATIO is the honest metric; MiMo's no-offload 22.8 tok/s is the clean speed). The whole
+point of the s9 fixes lands: **correctness (greedy-equiv) AND ~1.8× throughput together**, on both
+a pure-attention and a hybrid-GDN model, under PP=2+MTP. (Single-GPU vs PP head-to-head left as a
+follow-up — single-GPU 27B needs heavy offload so its absolute tok/s isn't comparable to PP=2.)
