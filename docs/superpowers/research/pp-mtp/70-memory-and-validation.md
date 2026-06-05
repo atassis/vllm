@@ -205,3 +205,47 @@ without cpu_offload. int4 (~1.78 GiB saved) is the stretch option if int8 is tig
   (so we also test the conv1d `-1` hazard), or pure attention? (A3.4 step 1.)
 - **New Q15:** does MiMo-7B run PP=2+MTP under `draft_pp=1` without `SupportsPP`
   (guard short-circuits at pp=1)? (A3.3.)
+
+## Session 9 — gateway-deploy memory map + prod-regime correctness (2026-06-05)
+
+**Correctness under the FULL prod regime — VALIDATED.** The gateway (`/opt/llm`, router +
+systemd vLLM backends, all `--pipeline-parallel-size 2`, currently NO spec) runs 27B with
+`--max-num-seqs 16 --enable-prefix-caching --kv-cache-dtype fp8 --max-model-len 16384`.
+Ran 27B PP=2 + MTP at batch=16 + prefix-caching + fp8 (cpu_offload to fit): **spec ==
+baseline 5/5 token-identical.** Crucially, `--enable-prefix-caching` flips
+`mamba_cache_mode` to **'align'** (config.py:355) — the mode the s9 GDN fix flagged as
+untested. **Align is now tested under PP+MTP+batch and works** → s9 caveat resolved. Net:
+the fix is correct in the exact prod engine config; the ONLY blocker is VRAM.
+
+**Memory wall on 15.5 GiB GPUs (why MTP won't fit without offload at prod batch/context).**
+Weight breakdown (`tools/gpu-harness/wbreakdown.py`, reads safetensors headers): total weights
+**20.35 GiB** for "27B-AWQ":
+| component | GiB | % |
+|---|--:|--:|
+| target GDN linear-attn (48 layers) | 9.47 | 46.5 |
+| target full-attn (16 layers) | 4.50 | 22.1 |
+| embed_tokens (UN-quantized) | 2.37 | 11.6 |
+| lm_head (UN-quantized, NOT tied) | 2.37 | 11.6 |
+| vision/MM tower (333 tensors) | 0.86 | 4.2 |
+| MTP/draft | 0.79 | 3.9 |
+
+Per-rank (default 32/32): rank0 = embed 2.37 + vision 0.86 + ~7.0 layers ≈ 10.2; **rank1
+(the OOM rank) = lm_head 2.37 + draft 0.79 + ~7.0 layers ≈ 10.2 + runtime GDN state(×16) +
+KV.** Empirical [MEM]: gpu0 10.61 / gpu1 12.85 (with offload=5). At batch=16 even BASELINE
+fits only ~4704 ctx at util 0.95 (not the prod 16384 — that flag may be aspirational/untested).
+
+**Compression levers to fit MTP WITHOUT offload (ranked by impact on rank1):**
+1. **Quantize lm_head** (2.37 GiB UN-quantized, sits on rank1 = the OOM rank) → int8 ~1.2 / int4
+   ~0.6 GiB, frees ~1.2-1.8 GiB exactly where needed. Natural A1c extension (A1c already int4s
+   the draft embed + shares lm_head). Highest-impact, targeted.
+2. **Drop the vision tower** (0.86 GiB, loaded but unused at `--limit-mm 0`) — free rank0 so Q13
+   can shift more layers off rank1.
+3. **Q13 `VLLM_PP_LAYER_PARTITION`** — move target layers rank1→rank0 (38/26 helped baseline but
+   draft still OOM'd alone; combine with #1+#2).
+4. embed_tokens quant (2.37, rank0 — lower priority, rank0 has headroom).
+5. GDN runtime state fp32→bf16 (`mamba_ssm_dtype`) — risky for SSM stability; last resort.
+
+**Bench under batch=16+offload:** baseline 5.48 vs spec 8.12 tok/s = **1.48× greedy-equiv**.
+=> Deploy options for the gateway: (a) enable MTP with cpu_offload now (works, 1.48×, slower
+abs), or (b) implement lm_head-quant (#1) + vision-drop (#2) to fit without offload at full
+speed. The fix itself is done; this is deployment memory-tuning.
