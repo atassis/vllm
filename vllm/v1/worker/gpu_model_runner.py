@@ -1860,20 +1860,6 @@ class GPUModelRunner(
         # so convert draft_token_ids to torch.int32 here.
         draft_token_ids = self._draft_token_ids.to(dtype=torch.int32)
 
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            import sys as _sys
-
-            _st = getattr(self, "_ppdbg_step", 0)
-            _last = get_pp_group().is_last_rank
-            print(
-                f"PPDBG[draftscatter s{_st} last={_last}] "
-                f"draft={draft_token_ids[:num_reqs].tolist()} "
-                f"spec_idx={spec_flattened_indices} "
-                f"prev_draft_idx={prev_draft_token_indices}",
-                file=_sys.stderr,
-                flush=True,
-            )
-
         self.input_ids.gpu.scatter_(
             dim=0,
             index=draft_tokens_index_tensor,
@@ -1991,28 +1977,6 @@ class GPUModelRunner(
             token_indices_tensor,
             out=self.input_ids.cpu[:total_num_scheduled_tokens],
         )
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            try:
-                import sys as _sys
-
-                _ib = self.input_batch
-                _n = total_num_scheduled_tokens
-                _ids = self.input_ids.cpu[:_n].tolist()
-                _neg = [j for j, v in enumerate(_ids) if v < 0]
-                _step = getattr(self, "_ppdbg_step", 0)
-                _last = get_pp_group().is_last_rank
-                print(
-                    f"PPDBG[read s{_step} last={_last}] nsched={_n} "
-                    f"positions={positions_np.tolist()} input_ids={_ids} "
-                    f"neg_at={_neg} "
-                    f"nct_cpu={_ib.num_computed_tokens_cpu[:num_reqs].tolist()} "
-                    f"ntns={_ib.num_tokens_no_spec[:num_reqs].tolist()}",
-                    file=_sys.stderr,
-                    flush=True,
-                )
-                self._ppdbg_step = _step + 1
-            except Exception as _e:  # noqa: BLE001
-                print(f"PPDBG[read] ERR {_e}", file=_sys.stderr, flush=True)
         if self.enable_prompt_embeds:
             is_token_ids = self.input_batch.is_token_ids_tensor.flatten()
             torch.index_select(
@@ -2094,17 +2058,6 @@ class GPUModelRunner(
             self.optimistic_seq_lens_cpu[:num_reqs].numpy() < num_tokens_np
         )
         self.discard_request_mask.copy_to_gpu(num_reqs)
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            import sys as _sys
-
-            _osl = self.optimistic_seq_lens_cpu[:num_reqs].tolist()
-            print(
-                f"PPDBG[discard] optimistic_seq={_osl} "
-                f"num_tokens={num_tokens_np.tolist()} "
-                f"discard={self.discard_request_mask.np[:num_reqs].tolist()}",
-                file=_sys.stderr,
-                flush=True,
-            )
 
         # Sync num_accepted_tokens from CPU (set by
         # _update_states_after_model_execute for hybrid models).
@@ -4754,21 +4707,6 @@ class GPUModelRunner(
         """
         pp = get_pp_group()
         assert pp.is_last_rank
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            import sys as _sys
-
-            _nr = self.input_batch.num_reqs
-            _st = getattr(self, "_ppdbg_send_step", 0)
-            _chunked = self._is_all_reqs_chunked_prefill()
-            print(
-                f"PPDBG[send s{_st}] chunked={_chunked} "
-                f"sampled={sampled_token_ids[:_nr].tolist()} "
-                f"nct_cpu={self.input_batch.num_computed_tokens_cpu[:_nr].tolist()} "
-                f"ntns={self.input_batch.num_tokens_no_spec[:_nr].tolist()}",
-                file=_sys.stderr,
-                flush=True,
-            )
-            self._ppdbg_send_step = _st + 1
         # Skip for chunked prefill: sampled tokens are dummy
         # and will be discarded, no need to broadcast.
         if not self._is_all_reqs_chunked_prefill():
@@ -4884,26 +4822,6 @@ class GPUModelRunner(
             recv = torch.empty((num_reqs, width), dtype=torch.int32, device=self.device)
             gathered = None
         self.input_batch.prev_sampled_token_ids = recv
-
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            try:
-                import sys as _sys
-
-                _ib = self.input_batch
-                _step = getattr(self, "_ppdbg_step", 0)
-                _rs = [self.requests.get(r) for r in _ib.req_ids[:num_reqs]]
-                _pnd = [None if s is None else s.prev_num_draft_len for s in _rs]
-                _olen = [None if s is None else len(s.output_token_ids) for s in _rs]
-                print(
-                    f"PPDBG[recv s{_step}] recv={recv[:num_reqs].tolist()} "
-                    f"gathered={gathered} pnd={_pnd} outlen={_olen} "
-                    f"ntns={_ib.num_tokens_no_spec[:num_reqs].tolist()} "
-                    f"nct_cpu={_ib.num_computed_tokens_cpu[:num_reqs].tolist()}",
-                    file=_sys.stderr,
-                    flush=True,
-                )
-            except Exception as _e:  # noqa: BLE001
-                print(f"PPDBG[recv] ERR {_e}", file=_sys.stderr, flush=True)
 
         # construct `prev_req_id_to_index` here so `_prepare_input_ids`
         # can map req_id -> previous batch row

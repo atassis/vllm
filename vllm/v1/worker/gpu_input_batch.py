@@ -506,16 +506,6 @@ class InputBatch:
         self.token_ids_cpu[req_index, start_index:end_token_index] = spec_token_ids
         self.is_token_ids[req_index, start_index:end_token_index] = True
         cur_spec_token_ids.extend(spec_token_ids)
-        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
-            import sys as _sys
-
-            print(
-                f"PPDBG[spectok] req_idx={req_index} drafts={list(spec_token_ids)} "
-                f"wrote_at=[{start_index}:{end_token_index}] "
-                f"nct_cpu={self.num_computed_tokens_cpu[req_index]}",
-                file=_sys.stderr,
-                flush=True,
-            )
 
     def remove_request(self, req_id: str) -> int | None:
         """This method must always be followed by a call to condense().
