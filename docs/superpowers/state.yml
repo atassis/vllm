@@ -7,6 +7,18 @@
 updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
 
 next_action: >
+  ALL ENGINEERING DONE through s9; remaining = PR SERIES. Greedy-equiv closed for pure-attention
+  (MiMo) AND hybrid-GDN (27B) PP=2+MTP; ~94% MTP acceptance -> 1.74-1.88x; fix generalizes to
+  num_spec=2,3 (k=2 sweet spot). CLEANUP DONE (s9): all 6 PPDBG probes stripped (verified MiMo
+  output byte-identical to baseline after removal), reusable gpu-wb harness preserved in
+  docs/superpowers/tools/gpu-harness/ (NOT in any PR — untracked on gpu-wb). NEXT = PR SERIES,
+  small/bug-by-bug with the brick-81 invariant framing ("non-last PP rank applies the broadcast
+  per-req valid/accepted count to num_computed_tokens AND num_accepted_tokens"): A1c (memory wall) ->
+  B1a (width-agnostic broadcast) -> C3 (#40768 scheduler placeholder discipline) -> C4 (break#2
+  non-last reconstruction) -> s9-positions (num_computed_tokens drift) -> s9-gdn (num_accepted_tokens
+  hybrid state). Each PR: duplicate-work checks (gh issue/pr search), test commands + results, "AI
+  assistance used" statement, human submitter reviews every line (AGENTS.md). The whole class = ONE
+  contribution thesis (typed non-last-rank spec-accounting from the broadcast). --- (history below) ---
   GREEDY-EQUIV CLOSED for BOTH pure-attention (MiMo) AND hybrid-GDN (Qwen3.5-27B) PP=2+MTP (s9).
   Three fixes, one invariant — the non-last PP rank must apply the sampler's broadcast per-req
   valid/accepted count to: num_computed_tokens (positions/KV, commit 8105121a9) AND
