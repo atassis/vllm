@@ -4593,6 +4593,20 @@ class GPUModelRunner(
             # tokens on the CPU, so they are run after bookkeeping.
             propose_draft_token_ids(valid_sampled_token_ids)
 
+        # PP + async spec: broadcast the freshly-proposed drafts to the non-last
+        # ranks (paired 1:1 with the sampled-token broadcast above) so they can
+        # scatter the real draft tokens into the spec positions next step instead
+        # of the -1 placeholder. Without this the non-last verification-forward
+        # embeds garbage at the spec positions -> non-greedy output.
+        if (
+            self.use_async_scheduling
+            and self.num_spec_tokens
+            and not self.broadcast_pp_output
+        ):
+            pp = get_pp_group()
+            if pp.world_size > 1 and pp.is_last_rank:
+                self._pp_broadcast_draft_token_ids()
+
         # Finalize KV connector (wait_for_save + clear metadata) after
         # draft model runs. Deferred from target model forward to allow
         # draft model to also save its KV cache.
@@ -4725,6 +4739,39 @@ class GPUModelRunner(
                 sampled_token_ids = torch.cat([sampled_token_ids, pad], dim=-1)
             broadcast_sampled_token_ids(sampled_token_ids, pp.device_group, pp.rank)
 
+    def _pp_broadcast_draft_token_ids(self) -> None:
+        """Broadcast the proposed draft token ids from the last PP stage.
+
+        The drafter runs only on the last rank (`is_last_rank` gate), so
+        ``_draft_token_ids`` is ``None`` on the non-last ranks. Without this, the
+        non-last ranks embed the ``-1`` scheduler placeholder at the spec
+        positions in ``_prepare_input_ids`` (the GPU draft scatter is skipped when
+        ``_draft_token_ids is None``) -> wrong verification-forward hidden states
+        -> non-greedy output. Broadcasting the drafts (paired 1:1 with the sampled
+        broadcast each step) lets every rank scatter the REAL draft tokens, so the
+        verification matches the single-GPU path. Width is fixed at ``num_spec``
+        and ``-1``-padded; a None/absent draft broadcasts an all-``-1`` grid so the
+        non-last receive never blocks.
+        """
+        pp = get_pp_group()
+        assert pp.is_last_rank
+        if self._is_all_reqs_chunked_prefill():
+            return
+        num_reqs = self.input_batch.num_reqs
+        width = self.num_spec_tokens
+        dt = self._draft_token_ids
+        if torch.is_tensor(dt):
+            dt = dt.to(dtype=torch.int32)
+            if dt.shape[-1] < width:
+                pad = dt.new_full((dt.shape[0], width - dt.shape[-1]), -1)
+                dt = torch.cat([dt, pad], dim=-1)
+            dt = dt[:num_reqs, :width].contiguous()
+        else:
+            dt = torch.full(
+                (num_reqs, width), -1, dtype=torch.int32, device=self.device
+            )
+        broadcast_sampled_token_ids(dt, pp.device_group, pp.rank)
+
     def _pp_receive_prev_sampled_token_ids_to_input_batch(self) -> None:
         """Receive sampled token ids broadcast from last PP stage"""
         pp = get_pp_group()
@@ -4749,6 +4796,19 @@ class GPUModelRunner(
             # step's v, so writing all v values recv[i, 0:v] and advancing the cursor by
             # v keeps token_ids_cpu (and num_tokens_no_spec) in lockstep with the read.
             gathered = gather_valid_sampled_tokens_per_req(recv)
+            # Receive the broadcast draft tokens (paired 1:1 with the sampled
+            # broadcast on the last rank) so this rank's _prepare_input_ids draft
+            # scatter places the REAL drafts at the spec positions instead of the
+            # -1 placeholder (its local drafter never ran -> _draft_token_ids would
+            # be None and the scatter would be skipped -> non-greedy verification).
+            if self.num_spec_tokens:
+                self._draft_token_ids = receive_sampled_token_ids(
+                    num_reqs,
+                    self.num_spec_tokens,
+                    pp.device_group,
+                    pp.last_rank,
+                    self.device,
+                )
         else:
             # All-chunked-prefill: nothing was broadcast (recv is uninitialized) and
             # these requests take their next input from the prompt, not a sampled
