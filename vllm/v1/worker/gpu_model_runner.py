@@ -205,6 +205,11 @@ from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunnerMixin
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
+from vllm.v1.worker.pp_spec_broadcast import (
+    broadcast_sampled_token_ids,
+    gather_valid_sampled_tokens_per_req,
+    receive_sampled_token_ids,
+)
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     check_ubatch_thresholds,
@@ -1938,6 +1943,28 @@ class GPUModelRunner(
             token_indices_tensor,
             out=self.input_ids.cpu[:total_num_scheduled_tokens],
         )
+        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
+            try:
+                import sys as _sys
+
+                _ib = self.input_batch
+                _n = total_num_scheduled_tokens
+                _ids = self.input_ids.cpu[:_n].tolist()
+                _neg = [j for j, v in enumerate(_ids) if v < 0]
+                _step = getattr(self, "_ppdbg_step", 0)
+                _last = get_pp_group().is_last_rank
+                print(
+                    f"PPDBG[read s{_step} last={_last}] nsched={_n} "
+                    f"positions={positions_np.tolist()} input_ids={_ids} "
+                    f"neg_at={_neg} "
+                    f"nct_cpu={_ib.num_computed_tokens_cpu[:num_reqs].tolist()} "
+                    f"ntns={_ib.num_tokens_no_spec[:num_reqs].tolist()}",
+                    file=_sys.stderr,
+                    flush=True,
+                )
+                self._ppdbg_step = _step + 1
+            except Exception as _e:  # noqa: BLE001
+                print(f"PPDBG[read] ERR {_e}", file=_sys.stderr, flush=True)
         if self.enable_prompt_embeds:
             is_token_ids = self.input_batch.is_token_ids_tensor.flatten()
             torch.index_select(
@@ -2019,6 +2046,17 @@ class GPUModelRunner(
             self.optimistic_seq_lens_cpu[:num_reqs].numpy() < num_tokens_np
         )
         self.discard_request_mask.copy_to_gpu(num_reqs)
+        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
+            import sys as _sys
+
+            _osl = self.optimistic_seq_lens_cpu[:num_reqs].tolist()
+            print(
+                f"PPDBG[discard] optimistic_seq={_osl} "
+                f"num_tokens={num_tokens_np.tolist()} "
+                f"discard={self.discard_request_mask.np[:num_reqs].tolist()}",
+                file=_sys.stderr,
+                flush=True,
+            )
 
         # Sync num_accepted_tokens from CPU (set by
         # _update_states_after_model_execute for hybrid models).
@@ -4646,31 +4684,98 @@ class GPUModelRunner(
     def _pp_broadcast_prev_sampled_token_ids(
         self, sampled_token_ids: torch.Tensor
     ) -> None:
-        """Broadcast sampled token ids (GPU) from last PP stage"""
+        """Broadcast sampled token ids (GPU) from last PP stage.
+
+        Without spec the grid is ``[num_reqs, 1]``; with MTP/EAGLE spec it is
+        ``[num_reqs, num_spec + 1]`` (accepted drafts + bonus, ``-1``-padded). The
+        transport is width-agnostic; the receiver allocates the matching width.
+        """
         pp = get_pp_group()
         assert pp.is_last_rank
-        # `prev_sampled_token_ids` is expected to have shape [num_reqs, 1].
-        assert sampled_token_ids.dim() == 2 and sampled_token_ids.shape[-1] == 1, (
-            "PP+async expects sampled_token_ids to have shape [num_reqs, 1]"
-        )
+        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
+            import sys as _sys
+
+            _nr = self.input_batch.num_reqs
+            _st = getattr(self, "_ppdbg_send_step", 0)
+            _chunked = self._is_all_reqs_chunked_prefill()
+            print(
+                f"PPDBG[send s{_st}] chunked={_chunked} "
+                f"sampled={sampled_token_ids[:_nr].tolist()} "
+                f"nct_cpu={self.input_batch.num_computed_tokens_cpu[:_nr].tolist()} "
+                f"ntns={self.input_batch.num_tokens_no_spec[:_nr].tolist()}",
+                file=_sys.stderr,
+                flush=True,
+            )
+            self._ppdbg_send_step = _st + 1
         # Skip for chunked prefill: sampled tokens are dummy
         # and will be discarded, no need to broadcast.
         if not self._is_all_reqs_chunked_prefill():
-            torch.distributed.broadcast(
-                sampled_token_ids, src=pp.rank, group=pp.device_group
-            )
+            # The sampler emits a width-1 grid on steps with no scheduled spec
+            # tokens (e.g. the first decode after prefill), but the receiver always
+            # reads num_spec+1 columns. Pad the missing columns with -1 so the
+            # broadcast shapes match on both ranks; otherwise the receiver reads
+            # uninitialized buffer garbage in the extra column and commits it as a
+            # real token, corrupting the sequence (breaks greedy-equivalence).
+            width = self.num_spec_tokens + 1
+            if sampled_token_ids.shape[-1] < width:
+                pad = sampled_token_ids.new_full(
+                    (sampled_token_ids.shape[0], width - sampled_token_ids.shape[-1]),
+                    -1,
+                )
+                sampled_token_ids = torch.cat([sampled_token_ids, pad], dim=-1)
+            broadcast_sampled_token_ids(sampled_token_ids, pp.device_group, pp.rank)
 
     def _pp_receive_prev_sampled_token_ids_to_input_batch(self) -> None:
         """Receive sampled token ids broadcast from last PP stage"""
         pp = get_pp_group()
         assert not pp.is_last_rank
         num_reqs = self.input_batch.num_reqs
-        # `prev_sampled_token_ids` is expected to have shape [num_reqs, 1].
-        recv = torch.empty((num_reqs, 1), dtype=torch.int32, device=self.device)
-        # skip for chunked prefill.
+        # Without spec the grid is [num_reqs, 1]; with spec it is
+        # [num_reqs, num_spec + 1] (accepted drafts + bonus, -1 padded). Allocate
+        # the matching width so the broadcast from the last rank lines up.
+        width = self.num_spec_tokens + 1
         if not self._is_all_reqs_chunked_prefill():
-            torch.distributed.broadcast(recv, src=pp.last_rank, group=pp.device_group)
+            recv = receive_sampled_token_ids(
+                num_reqs, width, pp.device_group, pp.last_rank, self.device
+            )
+            # C4 (holistic): the non-last rank never runs the sampler, so it must
+            # persist the REAL sampled tokens per request (never -1) into its local
+            # buffers. A single-position write is insufficient: when a draft is
+            # accepted, num_computed_tokens advances by v = (accepted drafts + bonus)
+            # while only one slot was written, leaving the in-between (accepted-draft)
+            # positions as -1. The next step reads token_ids_cpu[num_computed_tokens]
+            # (which includes the spec tokens) and embeds a -1 -> indexSelectSmallIndex
+            # (break #2). Empirically num_computed_tokens grows by exactly the previous
+            # step's v, so writing all v values recv[i, 0:v] and advancing the cursor by
+            # v keeps token_ids_cpu (and num_tokens_no_spec) in lockstep with the read.
+            gathered = gather_valid_sampled_tokens_per_req(recv)
+        else:
+            # All-chunked-prefill: nothing was broadcast (recv is uninitialized) and
+            # these requests take their next input from the prompt, not a sampled
+            # token. Keep the original placeholder behaviour for them.
+            recv = torch.empty((num_reqs, width), dtype=torch.int32, device=self.device)
+            gathered = None
         self.input_batch.prev_sampled_token_ids = recv
+
+        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
+            try:
+                import sys as _sys
+
+                _ib = self.input_batch
+                _step = getattr(self, "_ppdbg_step", 0)
+                _rs = [self.requests.get(r) for r in _ib.req_ids[:num_reqs]]
+                _pnd = [None if s is None else s.prev_num_draft_len for s in _rs]
+                _olen = [None if s is None else len(s.output_token_ids) for s in _rs]
+                print(
+                    f"PPDBG[recv s{_step}] recv={recv[:num_reqs].tolist()} "
+                    f"gathered={gathered} pnd={_pnd} outlen={_olen} "
+                    f"ntns={_ib.num_tokens_no_spec[:num_reqs].tolist()} "
+                    f"nct_cpu={_ib.num_computed_tokens_cpu[:num_reqs].tolist()}",
+                    file=_sys.stderr,
+                    flush=True,
+                )
+            except Exception as _e:  # noqa: BLE001
+                print(f"PPDBG[recv] ERR {_e}", file=_sys.stderr, flush=True)
 
         # construct `prev_req_id_to_index` here so `_prepare_input_ids`
         # can map req_id -> previous batch row
@@ -4681,13 +4786,46 @@ class GPUModelRunner(
             if i in discard_req_indices_set:
                 continue
             prev_req_id_to_index[req_id] = i
-            # PP+async scheduling: advance per-request local cached output length by
-            # appending a placeholder (-1) token id.
-            if (req_state := self.requests.get(req_id)) is not None:
-                req_state.output_token_ids.append(-1)
             pos = self.input_batch.num_tokens_no_spec[i]
-            self.input_batch.is_token_ids[i, pos] = True
-            self.input_batch.num_tokens_no_spec[i] = pos + 1
+            req_state = self.requests.get(req_id)
+            if gathered is None:
+                # All-chunked-prefill: keep the -1 placeholder, advance by one.
+                if req_state is not None:
+                    req_state.output_token_ids.append(-1)
+                self.input_batch.is_token_ids[i, pos] = True
+                self.input_batch.num_tokens_no_spec[i] = pos + 1
+                continue
+            # Holistic C4: persist ALL v real tokens recv[i, 0:v] (accepted drafts +
+            # bonus, in sequence order) into the v positions [pos : pos + v] and
+            # advance the token_ids_cpu cursor by v, so the next step's read at
+            # num_computed_tokens (which includes the spec tokens) never lands on an
+            # un-backfilled -1. Empirically num_computed_tokens grows by exactly the
+            # previous step's v, so this keeps the write cursor in lockstep with the
+            # read. output_token_ids is deliberately NOT grown by v here: it drives
+            # num_tokens, which the discard mask compares against the (one-step-lagging)
+            # num_computed_tokens + num_scheduled; advancing it ahead of nct mis-marks
+            # the request as chunked-prefill and suppresses the broadcast. Keep the
+            # original single-token append (the latest/bonus) so num_tokens tracks nct.
+            values = gathered[i]
+            v = len(values)
+            end = pos + v
+            self.input_batch.token_ids_cpu[i, pos:end] = values
+            self.input_batch.is_token_ids[i, pos:end] = True
+            self.input_batch.num_tokens_no_spec[i] = end
+            if req_state is not None:
+                # (B) count reconciliation — the non-last-rank analogue of
+                # correct_spec_decode_token_counts (which runs only on the sampler
+                # rank). The optimistic-extend (:1319) appended prev_num_draft_len -1
+                # placeholders for THIS step's drafts; replace them with the v real
+                # committed tokens. Without this the rejected-draft placeholders
+                # (prev_num_draft_len - (v-1) of them) are never corrected on the
+                # non-last rank, so num_tokens inflates and discard_request_mask
+                # (:2045) eventually mis-fires -> request mis-marked all-chunked ->
+                # broadcast suppressed -> a -1 is written -> break #2.
+                optimistic = req_state.prev_num_draft_len
+                if optimistic:
+                    del req_state.output_token_ids[-optimistic:]
+                req_state.output_token_ids.extend(values)
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:

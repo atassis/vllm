@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пайплайн исполнения vLLM V1 — интерактивная карта</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#30363d;
+    --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --accent2:#3fb950;
+    --warn:#d29922; --bad:#f85149; --spec:#bc8cff; --code:#79c0ff;
+    --chip:#21262d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  header{padding:26px 22px 14px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#11161f,#0d1117)}
+  header h1{margin:0 0 4px;font-size:25px;letter-spacing:.2px}
+  header p{margin:0;color:var(--muted);max-width:1000px}
+  .tag{display:inline-block;background:var(--chip);border:1px solid var(--line);
+    color:var(--muted);border-radius:999px;padding:1px 9px;font-size:12px;margin-left:6px}
+  nav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:4px;
+    padding:8px 16px;background:#0d1117ee;backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line)}
+  nav button{background:transparent;border:1px solid transparent;color:var(--muted);
+    padding:6px 12px;border-radius:7px;cursor:pointer;font-size:13.5px}
+  nav button:hover{color:var(--fg);background:var(--panel)}
+  nav button.active{color:var(--fg);background:var(--panel2);border-color:var(--line)}
+  main{max-width:1180px;margin:0 auto;padding:22px 18px 90px}
+  section{display:none;animation:fade .2s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  h2{font-size:20px;margin:6px 0 4px;border-left:3px solid var(--accent);padding-left:10px}
+  .sub{color:var(--muted);margin:0 0 18px;padding-left:13px}
+  .grid{display:grid;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .fl{font-family:ui-monospace,monospace;font-size:12.5px;color:var(--code);
+    background:#0b1828;border:1px solid #18324d;border-radius:5px;padding:1px 6px;
+    white-space:nowrap;display:inline-block;margin:2px 3px 2px 0}
+  .fl:hover{background:#102a44}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;border-radius:999px;padding:1px 9px;
+    border:1px solid var(--line)}
+  .sev-high{background:#3d1418;border-color:#6e2329;color:#ff9a92}
+  .sev-med{background:#3a2d10;border-color:#6e561d;color:#f1c057}
+  .sev-low{background:#15291a;border-color:#23502f;color:#7ee29a}
+
+  /* блок-схема */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:6px 0 18px}
+  .node{flex:1 1 120px;min-width:120px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:11px 10px;cursor:pointer;text-align:center;position:relative;
+    transition:.15s}
+  .node:hover{border-color:var(--accent);transform:translateY(-2px)}
+  .node.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .node .t{font-weight:600;font-size:14px}
+  .node .s{font-size:11px;color:var(--muted);margin-top:2px}
+  .node.proc-front{border-top:3px solid #6e9bff}
+  .node.proc-core{border-top:3px solid var(--accent2)}
+  .node.proc-worker{border-top:3px solid var(--spec)}
+  .arrow{align-self:center;color:var(--muted);font-size:20px;padding:0 2px;user-select:none}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .legend i{display:inline-block;width:22px;height:3px;vertical-align:middle;margin-right:5px}
+  #detail{min-height:120px}
+
+  /* степпер */
+  .steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+  .step{flex:1 1 0;min-width:96px;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;padding:9px 8px;cursor:pointer;text-align:center;font-size:12.5px;
+    position:relative}
+  .step.on{border-color:var(--accent);background:var(--panel2)}
+  .step .n{font-size:10px;color:var(--muted)}
+  .stepbtns{display:flex;gap:8px;margin:10px 0}
+  .stepbtns button{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+    padding:7px 16px;border-radius:8px;cursor:pointer}
+  .stepbtns button:hover{border-color:var(--accent)}
+
+  /* таймлайн конвейера */
+  .modebar{display:flex;gap:8px;margin:6px 0 14px}
+  .modebar button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+    padding:7px 14px;border-radius:8px;cursor:pointer}
+  .modebar button.on{color:var(--fg);background:var(--panel2);border-color:var(--accent)}
+  table.tl{border-collapse:collapse;margin:6px 0}
+  table.tl td,table.tl th{border:1px solid var(--line);padding:6px 9px;text-align:center;
+    font-size:12.5px;min-width:54px}
+  table.tl th{color:var(--muted);font-weight:500}
+  .mb{border-radius:5px;padding:2px 6px;font-size:11.5px;display:inline-block}
+  .mb-sched{background:#16324f;color:#9cce5e}
+  .mb-exec{background:#163d22;color:#9ae6a4}
+  .mb-apply{background:#3a2350;color:#d7b3ff}
+  .mb-bubble{color:#586069}
+
+  /* глоссарий */
+  .search{width:100%;padding:11px 14px;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;color:var(--fg);font-size:14px;margin-bottom:12px}
+  .gloss{border-collapse:collapse;width:100%}
+  .gloss td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:top}
+  .gloss tr:hover{background:var(--panel)}
+  .gterm{font-weight:600;white-space:nowrap}
+  .gassume{color:var(--bad);font-size:12.5px}
+  .greal{font-size:13px}
+  .ghide{display:none}
+
+  /* параллелизм */
+  .ptabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .ptabs button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+    padding:6px 14px;border-radius:8px;cursor:pointer}
+  .ptabs button.on{color:var(--fg);background:var(--panel2);border-color:var(--accent)}
+  .shardrow{display:grid;grid-template-columns:130px 1fr;gap:10px;margin:6px 0}
+  .shardrow .k{color:var(--muted);font-size:13px;text-align:right;padding-top:6px}
+  .gpu{display:inline-block;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:8px 12px;margin:3px;font-size:12.5px;min-width:90px;text-align:center}
+  .gpu b{display:block;color:var(--accent)}
+  .comm{font-size:12.5px;color:var(--warn)}
+
+  .note{background:#0b1828;border:1px solid #18324d;border-radius:8px;padding:10px 13px;
+    font-size:13px;color:#bcd6f0;margin:10px 0}
+  .specpath{background:#1a1228;border:1px solid #4a2d6e;border-radius:8px;padding:10px 13px;
+    font-size:13px;color:#e0d0f5;margin:10px 0}
+  pre.ascii{background:#0a0e14;border:1px solid var(--line);border-radius:9px;padding:13px;
+    overflow:auto;font-size:12px;line-height:1.4;color:#b9c4d0}
+  .kbd{font-size:11px;color:var(--muted)}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:20px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>vLLM V1 — пайплайн исполнения, кликабельно <span class="tag">read-only ресёрч</span></h1>
+  <p>Каждый блок ссылается на <span class="mono" style="color:var(--code)">file:line</span> в
+  <a href="https://github.com/vllm-project/vllm">vllm-project/vllm</a>. Дополняет
+  <span class="mono">PIPELINE.md</span> и кирпичи в
+  <span class="mono">docs/superpowers/research/pp-mtp/</span>. Номера строк — это «якоря»
+  (рабочее дерево <span class="mono">e45e5d462</span>), при дрейфе перегрепни. <span style="color:var(--spec)">Фиолетовый</span>
+  путь = поток спекулятивных токенов под PP, тот код, который мы меняем.</p>
+</header>
+
+<nav id="nav"></nav>
+<main>
+
+<!-- ===================== АРХИТЕКТУРА ===================== -->
+<section id="arch" class="active">
+  <h2>Верхняя архитектура и модель процессов</h2>
+  <p class="sub">Кликни блок. Три уровня процессов, соединённые ZMQ (фронтенд↔движок) и RPC исполнителя (движок↔воркеры).</p>
+  <div class="legend">
+    <span><i style="background:#6e9bff"></i>Фронтенд-процесс</span>
+    <span><i style="background:#3fb950"></i>Процесс EngineCore</span>
+    <span><i style="background:#bc8cff"></i>Процесс(ы) воркера, 1/ранг</span>
+  </div>
+  <div class="flow" id="flow"></div>
+  <div class="card" id="detail"><span class="muted">Выбери компонент выше…</span></div>
+</section>
+
+<!-- ===================== ЖИЗНЕННЫЙ ЦИКЛ ===================== -->
+<section id="life">
+  <h2>Жизненный цикл запроса — пройди по шагам</h2>
+  <p class="sub">Одна итерация декодирования спекулятивного запроса под PP. Кнопки или клик по стадии.</p>
+  <div class="steps" id="steps"></div>
+  <div class="stepbtns">
+    <button onclick="stepMove(-1)">‹ Назад</button>
+    <button onclick="stepMove(1)">Вперёд ›</button>
+    <span class="kbd" style="align-self:center">работают и стрелки ← / →</span>
+  </div>
+  <div class="card" id="stepDetail"></div>
+  <div class="card" style="margin-top:12px">
+    <b>Стейт-машина статусов</b> <span class="muted">(RequestStatus, IntEnum)</span>
+    <pre class="ascii">WAITING ──schedule()──▶ RUNNING ──stop/EOS/len──▶ FINISHED_{STOPPED,LENGTH_CAPPED,…}
+   ▲                       │
+   │                       ├──allocate_slots()==None──▶ PREEMPTED ──┐
+   └───────────────────────┘   (num_computed_tokens=0, освобождает блоки) │
+   └─────────────────────────────────────────────◀──────────────────┘
+WAITING_FOR_{REMOTE_KVS, STRUCTURED_OUTPUT_GRAMMAR, STREAMING_REQ}  = варианты «заблокированного ожидания»</pre>
+    <span class="muted">Переходы — это голые присваивания <span class="mono">request.status = …</span>, разбросанные по планировщику; единого владельца FSM нет (слабое место W2).</span>
+    <span class="fl" data-fl="vllm/v1/request.py:329">request.py:329 RequestStatus</span>
+  </div>
+</section>
+
+<!-- ===================== РЕЖИМЫ ДВИЖКА ===================== -->
+<section id="modes">
+  <h2>Режимы движкового цикла и конвейер PP</h2>
+  <p class="sub">Движок выбирает <span class="mono">step</span> или <span class="mono">step_with_batch_queue</span> один раз при инициализации, по условию <span class="mono">max_concurrent_batches&gt;1</span>.</p>
+  <div class="modebar" id="modebar"></div>
+  <div class="card" id="modeDetail"></div>
+  <div class="card" style="margin-top:12px">
+    <b>Таймлайн микробатчей</b> — <span id="tlcap" class="muted"></span>
+    <div id="timeline"></div>
+    <div class="legend" style="margin-top:8px">
+      <span><span class="mb mb-sched">B<sub>n</sub></span> запланировать + запустить</span>
+      <span><span class="mb mb-exec">exec</span> forward на GPU (в полёте)</span>
+      <span><span class="mb mb-apply">apply</span> update_from_output</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== ПАРАЛЛЕЛИЗМ ===================== -->
+<section id="par">
+  <h2>Распределённый параллелизм — что шардится / реплицируется / коммуницируется</h2>
+  <p class="sub">Один синглтон <span class="mono">GroupCoordinator</span> на каждую ось на процесс. <span class="fl" data-fl="vllm/distributed/parallel_state.py:290">parallel_state.py:290</span></p>
+  <div class="ptabs" id="ptabs"></div>
+  <div class="card" id="parDetail"></div>
+</section>
+
+<!-- ===================== СПЕК ПУТЬ ===================== -->
+<section id="spec">
+  <h2>Поток спекулятивных токенов под PP <span class="tag" style="color:var(--spec);border-color:#4a2d6e">путь, который мы меняем</span></h2>
+  <p class="sub">Последний ранг сэмплит и прогоняет rejection-оракул, бродкастит сетку; не-последние ранги восстанавливают свой следующий вход. Это самый багоопасный стык (кирпичи 40 / 80).</p>
+  <div class="specpath">
+    <b>Rejection-оракул — это гейт корректности.</b> В greedy-режиме драфт-токен принимается
+    <i>тогда и только тогда</i>, когда он равен <span class="mono">target_logits.argmax(-1)</span>, иначе заменяется на него →
+    выход — чистая функция от (argmax таргета, драфт) → <b>не зависит от весов</b>. Поэтому случайные/MiMo веса
+    валидируют форму каскада; настоящие веса нужны только для acceptance rate.
+    <span class="fl" data-fl="vllm/v1/sample/rejection_sampler.py:708">rejection_sampler.py:708</span>
+    <span class="fl" data-fl="vllm/v1/sample/rejection_sampler.py:452">:452 target_argmax</span>
+  </div>
+  <pre class="ascii" id="specascii"></pre>
+  <div class="grid" id="speccards" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))"></div>
+</section>
+
+<!-- ===================== ГЛОССАРИЙ ===================== -->
+<section id="gloss">
+  <h2>Глоссарий — где имена vLLM вводят в заблуждение</h2>
+  <p class="sub">Ищи по термину, по «ожиданию» или по пути к файлу. Каждая строка: термин vLLM ↔ что обычно думают ↔ что это на самом деле.</p>
+  <input class="search" id="search" placeholder="фильтр… напр. 'batch_queue', 'async', 'placeholder', 'condense'">
+  <table class="gloss"><tbody id="glossbody"></tbody></table>
+</section>
+
+<!-- ===================== СЛАБЫЕ МЕСТА ===================== -->
+<section id="weak">
+  <h2>Слабые места и «не самые сильные решения»</h2>
+  <p class="sub">Severity × укоренённость. Фильтр по severity. Топ-5 по влиянию: W1, W2, W3, W4, W5.</p>
+  <div class="modebar" id="sevbar"></div>
+  <div class="grid" id="weakcards" style="grid-template-columns:1fr"></div>
+</section>
+
+</main>
+<footer>
+  Сгенерировано как read-only ресёрч-артефакт в <span class="mono">docs/superpowers/landing/</span> — не коммитится.
+  Открывается прямо в браузере (офлайн) или через <span class="mono">python -m http.server</span> в этой папке. См. <span class="mono">PIPELINE.md</span> + <span class="mono">README.md</span>.
+</footer>
+
+<script>
+const GH = "https://github.com/vllm-project/vllm/blob/main/";
+function ghURL(fl){
+  const i = fl.lastIndexOf(":"); const path=fl.slice(0,i); const line=fl.slice(i+1);
+  return GH+path+(/^\d+$/.test(line)?("#L"+line):"");
+}
+function linkify(root){
+  (root||document).querySelectorAll('.fl[data-fl]').forEach(el=>{
+    if(el.dataset.done) return; el.dataset.done=1;
+    const fl=el.dataset.fl; el.style.cursor='pointer';
+    el.title="открыть "+fl+" на GitHub";
+    el.onclick=()=>window.open(ghURL(fl),'_blank');
+  });
+}
+function chip(fl,label){return `<span class="fl" data-fl="${fl}">${label||fl}</span>`;}
+
+/* ---------------- НАВИГАЦИЯ ---------------- */
+const SECTIONS=[["arch","Архитектура"],["life","Жизненный цикл"],["modes","Режимы и PP"],
+  ["par","Параллелизм"],["spec","Спек под PP"],["gloss","Глоссарий"],["weak","Слабые места"]];
+const nav=document.getElementById('nav');
+SECTIONS.forEach(([id,label],i)=>{
+  const b=document.createElement('button'); b.textContent=label; b.dataset.id=id;
+  if(i===0)b.classList.add('active');
+  b.onclick=()=>{
+    document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('main section').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); document.getElementById(id).classList.add('active');
+    window.scrollTo(0,0);
+  };
+  nav.appendChild(b);
+});
+
+/* ---------------- АРХИТЕКТУРНАЯ СХЕМА ---------------- */
+const NODES=[
+  {id:'client',proc:'front',t:'Клиент / Фронтенд',s:'AsyncLLM · LLMEngine',
+   body:`<b>API-поверхность.</b> <span class="mono">AsyncLLM</span> (asyncio, для API-сервера) или
+   <span class="mono">LLMEngine</span> (синхронный, офлайн). Токенизирует через <b>Processor</b> →
+   <code>EngineCoreRequest</code>; стримит <code>EngineCoreOutputs</code> обратно через
+   <b>OutputProcessor</b> → Detokenizer + LogprobsProcessor.
+   ${chip('vllm/v1/engine/async_llm.py:70','async_llm.py:70 AsyncLLM')}
+   ${chip('vllm/v1/engine/llm_engine.py:47','llm_engine.py:47 LLMEngine')}
+   ${chip('vllm/v1/engine/input_processor.py:1','input_processor.py')}
+   ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')}`},
+  {id:'coreclient',proc:'front',t:'EngineCoreClient',s:'ZMQ / in-proc',
+   body:`<b>Транспортный фасад.</b> <span class="mono">InprocClient</span> крутит движок прямо в процессе
+   (без сокетов); <span class="mono">SyncMPClient</span>/<span class="mono">AsyncMPClient</span> прячут его за
+   ZMQ (msgpack, <code>array_like</code>-структуры). Выходная сторона — на демон-потоке / asyncio-таске, чтобы
+   вызывающий никогда не блокировался на сериализации.
+   ${chip('vllm/v1/engine/core_client.py:1','core_client.py')}
+   ${chip('vllm/v1/engine/__init__.py:83','__init__.py:83 EngineCoreRequest')}`},
+  {id:'enginecore',proc:'core',t:'EngineCore',s:'логика движка',
+   body:`<b>Только логика</b> — планировщик + исполнитель + KV + structured-output, без I/O.
+   Обёрнут <span class="mono">EngineCoreProc</span> для отдельного процесса: 2 демон-потока I/O +
+   синхронный <span class="mono">run_busy_loop</span>, вызывающий <span class="mono">step_fn()</span> каждую итерацию.
+   <i>Это не asyncio.</i>
+   ${chip('vllm/v1/engine/core.py:95','core.py:95 EngineCore')}
+   ${chip('vllm/v1/engine/core.py:858','core.py:858 EngineCoreProc')}
+   ${chip('vllm/v1/engine/core.py:1216','core.py:1216 run_busy_loop')}`},
+  {id:'scheduler',proc:'core',t:'Scheduler',s:'continuous batching',
+   body:`<b>Цикл «догоняния» по бюджету токенов.</b> Нет фаз prefill/decode — каждый шаг назначает токены так,
+   чтобы <code>num_computed_tokens</code> догнал <code>num_tokens_with_spec</code>. Обрабатывает chunked prefill,
+   prefix caching, преемпцию, аллокацию KV-блоков. <span class="mono">AsyncScheduler</span> добавляет
+   <code>-1</code>-плейсхолдеры, чтобы планировать наперёд.
+   ${chip('vllm/v1/core/sched/scheduler.py:336','scheduler.py:336 schedule()')}
+   ${chip('vllm/v1/core/sched/scheduler.py:1348','scheduler.py:1348 update_from_output')}
+   ${chip('vllm/v1/core/sched/async_scheduler.py:12','async_scheduler.py:12')}`},
+  {id:'executor',proc:'core',t:'Executor',s:'uni / multiproc / ray',
+   body:`<b>Управляющая плоскость.</b> <span class="mono">collective_rpc</span> рассылает вызов всем воркерам.
+   <span class="mono">UniProcExecutor</span> = один воркер в том же процессе; <span class="mono">MultiprocExecutor</span> =
+   один ОС-процесс на ранг (shared-mem MessageQueues); Ray = акторы + скомпилированный DAG.
+   ${chip('vllm/v1/executor/abstract.py:37','abstract.py:37 Executor')}
+   ${chip('vllm/v1/executor/multiproc_executor.py:103','multiproc_executor.py:103')}`},
+  {id:'worker',proc:'worker',t:'Worker',s:'gpu_worker',
+   body:`<b>GPU-хост на ранг.</b> <span class="mono">init_device</span>, <span class="mono">load_model</span>,
+   <b>determine_available_memory</b> (профилирующий dummy-прогон, который определяет <code>num_gpu_blocks</code>), и
+   send/recv <code>IntermediateTensors</code> для PP вокруг forward.
+   ${chip('vllm/v1/worker/gpu_worker.py:112','gpu_worker.py:112 Worker')}`},
+  {id:'runner',proc:'worker',t:'GPUModelRunner',s:'~7 583 строки',
+   body:`<b>God-объект.</b> Сверка персистентного батча (<span class="mono">_update_states</span>), подготовка входов,
+   метаданные внимания, forward, сэмплинг, спек-пропозал, PP-бродкаст, мультимодал, cudagraphs. Драфтер существует
+   <b>только на последнем PP-ранге</b>. (Слабое место W1.)
+   ${chip('vllm/v1/worker/gpu_model_runner.py:422','gpu_model_runner.py:422')}
+   ${chip('vllm/v1/worker/gpu_model_runner.py:1132','_update_states:1132')}
+   ${chip('vllm/v1/worker/gpu_model_runner.py:4010','execute_model:4010')}`},
+  {id:'sampler',proc:'worker',t:'Sampler / Spec',s:'rejection-оракул',
+   body:`<b>Оракул корректности.</b> Сэмплер выбирает токены; под спеком <b>rejection sampler</b> верифицирует драфты
+   (greedy = совпадение argmax → не зависит от весов). Сетка выхода <code>[num_reqs, num_spec+1]</code>, с паддингом
+   <code>-1</code>, бонус-токен в хвосте принятых. Затем драфтер предлагает следующие K.
+   ${chip('vllm/v1/sample/rejection_sampler.py:30','rejection_sampler.py:30 PLACEHOLDER -1')}
+   ${chip('vllm/v1/sample/rejection_sampler.py:708','rejection_sampler.py:708 greedy')}
+   ${chip('vllm/v1/worker/pp_spec_broadcast.py:32','pp_spec_broadcast.py:32')}`},
+];
+const flow=document.getElementById('flow');
+NODES.forEach((n,i)=>{
+  const d=document.createElement('div'); d.className='node proc-'+n.proc; d.dataset.id=n.id;
+  d.innerHTML=`<div class="t">${n.t}</div><div class="s">${n.s}</div>`;
+  d.onclick=()=>{
+    document.querySelectorAll('.node').forEach(x=>x.classList.remove('sel'));
+    d.classList.add('sel');
+    const det=document.getElementById('detail');
+    det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${n.t}</div>${n.body}`;
+    linkify(det);
+  };
+  flow.appendChild(d);
+  if(i<NODES.length-1){const a=document.createElement('div');a.className='arrow';a.textContent='▸';flow.appendChild(a);}
+});
+flow.firstChild.click();
+
+/* ---------------- СТЕППЕР ЖИЗНЕННОГО ЦИКЛА ---------------- */
+const STEPS=[
+  {n:'1',t:'add_request',d:`Фронтенд токенизирует промпт → <code>EngineCoreRequest</code>; движок строит
+    <code>Request</code> (статус <b>WAITING</b>) и кладёт в очередь. Счётчики токенов инициализируются:
+    <code>num_computed_tokens=0</code>, <code>spec_token_ids=[]</code>.
+    ${chip('vllm/v1/engine/core.py:95','core.py add_request')} ${chip('vllm/v1/request.py:329','request.py Request/Status')}`},
+  {n:'2',t:'schedule',d:`<b>Scheduler.schedule()</b>: цикл по бюджету токенов допускает запрос (WAITING→<b>RUNNING</b>),
+    аллоцирует KV-блоки, упаковывает драфт-токены в <code>scheduled_spec_decode_tokens</code> и (async) резервирует
+    <code>-1</code>-плейсхолдеры. Отправляет <code>SchedulerOutput</code>.
+    ${chip('vllm/v1/core/sched/scheduler.py:336','scheduler.py:336')} ${chip('vllm/v1/core/sched/async_scheduler.py:31','async_scheduler.py:31 плейсхолдеры')}`},
+  {n:'3',t:'execute (PP)',d:`Исполнитель <code>collective_rpc("execute_model")</code> на каждый ранг.
+    <span class="mono">GPUModelRunner._update_states</span> сверяет персистентный батч (+<code>condense()</code>),
+    <span class="mono">_prepare_inputs</span> готовит тензоры, модель делает forward. PP-стадии передают
+    <code>IntermediateTensors</code> стадия→стадия.
+    ${chip('vllm/v1/worker/gpu_model_runner.py:1132','_update_states:1132')} ${chip('vllm/v1/worker/gpu_model_runner.py:4010','execute_model:4010')}`},
+  {n:'4',t:'sample',d:`Только на <b>последнем ранге</b>: логиты → сэмплер → <code>sampled_token_ids</code>.
+    Результат фиксируется в <code>ExecuteModelState</code>; сэмплинг можно отложить (structured output) или вынести
+    отдельно (<span class="mono">sample_tokens</span>), чтобы перекрыть его с подготовкой следующей стадии.
+    ${chip('vllm/v1/worker/gpu_model_runner.py:4389','sample_tokens:4389')}`},
+  {n:'5',t:'spec verify',d:`<span style="color:var(--spec)">Спек-путь.</span> <b>Rejection sampler</b> верифицирует драфты
+    против argmax таргета (greedy = точное совпадение → не зависит от весов). Выдаёт <code>[num_reqs, num_spec+1]</code>,
+    валидные токены подряд с позиции 0, паддинг <code>-1</code>, бонус в хвосте принятых. Последний ранг
+    <b>бродкастит</b> сетку остальным рангам.
+    ${chip('vllm/v1/sample/rejection_sampler.py:708','rejection_sampler.py:708')} ${chip('vllm/v1/worker/pp_spec_broadcast.py:32','pp_spec_broadcast.py:32')}`},
+  {n:'6',t:'update_from_output',d:`Обратно в движке (на k≈pp_size−1 шагов позже под batch_queue):
+    <b>Scheduler.update_from_output</b> делает rejection-учёт — <code>num_accepted=len(gen)−1</code>,
+    <code>num_rejected=num_draft−num_accepted</code>, откатывает <code>num_computed_tokens</code> и
+    <code>num_output_placeholders</code>. Дописывает принятые токены; проверяет стоп.
+    ${chip('vllm/v1/core/sched/scheduler.py:1348','scheduler.py:1348')} ${chip('vllm/v1/core/sched/scheduler.py:1438','scheduler.py:1438 учёт')}`},
+  {n:'7',t:'detokenize',d:`<code>EngineCoreOutput</code> возвращается на фронтенд. <b>IncrementalDetokenizer</b>
+    конвертирует новые id токенов → текст, ловит стоп-строки; <b>LogprobsProcessor</b> форматирует logprobs.
+    ${chip('vllm/v1/engine/detokenizer.py:1','detokenizer.py')} ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')}`},
+  {n:'8',t:'output',d:`<b>OutputProcessor</b> отдаёт <code>RequestOutput</code> (стрим-дельта или финал).
+    Если сработал стоп — запрос <b>FINISHED_*</b>, его KV-блоки освобождаются. Иначе он возвращается к
+    <b>schedule</b> за следующим токеном.
+    ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')} ${chip('vllm/v1/request.py:363','request.py:363 FinishReason')}`},
+];
+let curStep=0;
+const stepsEl=document.getElementById('steps');
+STEPS.forEach((s,i)=>{
+  const d=document.createElement('div'); d.className='step'; d.dataset.i=i;
+  d.innerHTML=`<div class="n">шаг ${s.n}</div>${s.t}`;
+  d.onclick=()=>{curStep=i;renderStep();};
+  stepsEl.appendChild(d);
+});
+function renderStep(){
+  document.querySelectorAll('.step').forEach((e,i)=>e.classList.toggle('on',i===curStep));
+  const s=STEPS[curStep];
+  const det=document.getElementById('stepDetail');
+  det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${s.n}. ${s.t}</div>${s.d}`;
+  linkify(det);
+}
+function stepMove(dir){curStep=(curStep+dir+STEPS.length)%STEPS.length;renderStep();}
+renderStep();
+document.addEventListener('keydown',e=>{
+  if(!document.getElementById('life').classList.contains('active'))return;
+  if(e.key==='ArrowRight')stepMove(1); if(e.key==='ArrowLeft')stepMove(-1);
+});
+
+/* ---------------- РЕЖИМЫ + ТАЙМЛАЙН ---------------- */
+const MODES=[
+  {id:'sync',t:'step (синхронный)',
+   body:`<b>Один батч в полёте.</b> <span class="mono">schedule → execute_model(non_block) → future.result()</span>
+   <i>блокирует</i> поток движка на GPU → <span class="mono">update_from_output</span>. Используется при
+   <code>max_concurrent_batches==1</code> (нет PP, нет async).
+   ${chip('vllm/v1/engine/core.py:443','core.py:443 step()')} ${chip('vllm/v1/engine/core.py:217','core.py:217 step_fn')}`,
+   pp:1,async:false},
+  {id:'bq',t:'step_with_batch_queue (PP)',
+   body:`<b>Конвейеризовано.</b> Планируем шаг N, запускаем <span class="mono">execute_model(non_block)</span>,
+   <span class="mono">appendleft</span> в <code>deque(maxlen=pp_size)</code> и <b>сразу возвращаемся без ожидания</b>,
+   пока в очереди есть место. Когда заполнено — <span class="mono">pop()</span> <i>самый старый</i> и применяем его, так что
+   <span class="mono">update_from_output</span> отстаёт от планирования на <b>≈ pp_size−1 шагов</b> (заполняет конвейер).
+   <code>SchedulerOutput</code> — это снапшот; спек-/плейсхолдер-состояние может измениться до применения — это и есть
+   окно устаревания, где живёт корректность спека под PP.
+   ${chip('vllm/v1/engine/core.py:484','core.py:484')} ${chip('vllm/config/vllm.py:497','vllm.py:497 max_concurrent_batches')}`,
+   pp:2,async:true},
+  {id:'post',t:'post_step (sync спек)',
+   body:`<b>Синхронный путь драфт-токенов.</b> После каждого <span class="mono">step_fn</span>, если <i>не</i> async:
+   тянем <span class="mono">take_draft_token_ids()</span> → <span class="mono">scheduler.update_draft_token_ids()</span>.
+   Под async это <b>no-op</b> — драфты внедряет воркер. Два пути, без общей абстракции (W4); для MTP+PP
+   sync-путь <b>дедлочится</b>, а async-путь <b>падает</b>.
+   ${chip('vllm/v1/engine/core.py:474','core.py:474 post_step')}`,
+   pp:2,async:false},
+];
+const modebar=document.getElementById('modebar');
+MODES.forEach((m,i)=>{
+  const b=document.createElement('button'); b.textContent=m.t; if(i===1)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#modebar button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); renderMode(m);};
+  modebar.appendChild(b);
+});
+function renderMode(m){
+  const det=document.getElementById('modeDetail');
+  det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${m.t}</div>${m.body}`;
+  linkify(det);
+  renderTimeline(m);
+}
+function renderTimeline(m){
+  const tl=document.getElementById('timeline');
+  const cap=document.getElementById('tlcap');
+  const T=7;
+  if(m.id==='sync'){
+    cap.textContent="sync: schedule→exec→apply происходят в ОДНОМ шаге; один батч за раз (без перекрытия).";
+    let h='<table class="tl"><tr><th>t→</th>'+Array.from({length:T},(_,t)=>`<th>${t}</th>`).join('')+'</tr>';
+    h+='<tr><th>батч</th>';
+    for(let t=0;t<T;t++){h+=`<td><span class="mb mb-sched">B${t}</span> <span class="mb mb-exec">x</span> <span class="mb mb-apply">a</span></td>`;}
+    h+='</tr></table>';
+    tl.innerHTML=h;
+    return;
+  }
+  const pp=2;
+  cap.textContent=`конвейер PP=${pp}: батч Bₙ планируется в момент t, исполняется на ${pp} стадиях, применяется в t+${pp-1}. Пузырь заполнения = первые ${pp-1} шагов. update_from_output отстаёт на ${pp-1}.`;
+  let h='<table class="tl"><tr><th>стадия \\ t→</th>'+Array.from({length:T},(_,t)=>`<th>${t}</th>`).join('')+'</tr>';
+  h+='<tr><th>schedule</th>';
+  for(let t=0;t<T;t++) h+=`<td><span class="mb mb-sched">B${t}</span></td>`;
+  h+='</tr>';
+  h+='<tr><th>rank0 forward</th>';
+  for(let t=0;t<T;t++) h+=`<td><span class="mb mb-exec">B${t}</span></td>`;
+  h+='</tr>';
+  h+='<tr><th>rank1 forward</th>';
+  for(let t=0;t<T;t++){ const b=t-1; h+=`<td>${b<0?'<span class="mb mb-bubble">·пузырь·</span>':`<span class="mb mb-exec">B${b}</span>`}</td>`;}
+  h+='</tr>';
+  h+='<tr><th>apply B<sub>n</sub></th>';
+  for(let t=0;t<T;t++){ const b=t-(pp-1); h+=`<td>${b<0?'<span class="mb mb-bubble">·</span>':`<span class="mb mb-apply">B${b}</span>`}</td>`;}
+  h+='</tr></table>';
+  tl.innerHTML=h;
+}
+renderMode(MODES[1]);
+
+/* ---------------- ПАРАЛЛЕЛИЗМ ---------------- */
+const PAR=[
+  {id:'TP',t:'Тензорный (TP)',
+   shard:'веса <i>внутри</i> слоя (Column/Row-ParallelLinear, vocab-эмбеддинг)',
+   repl:'id токенов',
+   comm:'all-reduce / all-gather активаций <b>на каждом слое</b> (тяжело по PCIe → избегаем на паре без NVLink)',
+   fl:['vllm/model_executor/layers/linear.py:407','vllm/model_executor/layers/linear.py:1389'],
+   draw:`<div><span class="gpu"><b>GPU0</b>W[:, :h/2]</span><span class="gpu"><b>GPU1</b>W[:, h/2:]</span></div>
+         <div class="comm">→ all-reduce после каждого слоя</div>`},
+  {id:'PP',t:'Конвейерный (PP)',
+   shard:'слои <i>между</i> рангами (make_layers + get_pp_indices)',
+   repl:'—',
+   comm:'IntermediateTensors {hidden_states, residual} передаются стадия→стадия (мелко, point-to-point)',
+   fl:['vllm/distributed/utils.py:109','vllm/distributed/parallel_state.py:852','vllm/sequence.py:12'],
+   draw:`<div><span class="gpu"><b>rank0</b>слои 0..k<br>+embed</span> <span class="arrow">▸</span>
+         <span class="gpu"><b>rank1</b>слои k..L<br>+norm+lm_head<br>+<span style="color:var(--spec)">драфтер</span></span></div>
+         <div class="comm">→ send {hidden,residual} один раз на границе стадий</div>`},
+  {id:'DP',t:'По данным (DP)',
+   shard:'батч (разные запросы на репликах)',
+   repl:'вся модель',
+   comm:'координация волн/нагрузки + посинхронизация числа запросов на шаг (DP-координатор)',
+   fl:['vllm/v1/engine/coordinator.py:23','vllm/v1/engine/core.py:1676'],
+   draw:`<div><span class="gpu"><b>реплика A</b>вся модель<br>reqs 0..n</span>
+         <span class="gpu"><b>реплика B</b>вся модель<br>reqs n..m</span></div>
+         <div class="comm">→ координатор синхронит волны; весов не гоняет</div>`},
+  {id:'EP',t:'По экспертам (EP)',
+   shard:'эксперты MoE между рангами (FusedMoE); группа = DP×PCP×TP, по одной на PP-стадию',
+   repl:'не-экспертные веса',
+   comm:'all-to-all токенов к их экспертам и обратно',
+   fl:['vllm/distributed/parallel_state.py:1289'],
+   draw:`<div><span class="gpu"><b>GPU0</b>эксперты 0..e/2</span><span class="gpu"><b>GPU1</b>эксперты e/2..e</span></div>
+         <div class="comm">→ all-to-all: маршрутизация каждого токена к его эксперту</div>`},
+  {id:'CP',t:'По контексту (PCP/DCP)',
+   shard:'измерение последовательности/контекста (PCP=prefill, DCP=decode)',
+   repl:'модель',
+   comm:'all-gather / all-reduce (или all-to-all) срезов Q/K/V; DCP переиспользует GPU из TP (dcp_size ≤ tp_size)',
+   fl:['vllm/distributed/parallel_state.py:1313','vllm/distributed/parallel_state.py:1265'],
+   draw:`<div><span class="gpu"><b>GPU0</b>seq[:, :n/2]</span><span class="gpu"><b>GPU1</b>seq[:, n/2:]</span></div>
+         <div class="comm">→ all-gather срезов KV во время внимания</div>`},
+];
+const ptabs=document.getElementById('ptabs');
+PAR.forEach((p,i)=>{
+  const b=document.createElement('button'); b.textContent=p.t; if(i===1)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#ptabs button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); renderPar(p);};
+  ptabs.appendChild(b);
+});
+function renderPar(p){
+  const d=document.getElementById('parDetail');
+  d.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:8px">${p.t}</div>
+    ${p.draw}
+    <div class="shardrow"><div class="k">шардится</div><div>${p.shard}</div></div>
+    <div class="shardrow"><div class="k">реплицируется</div><div>${p.repl}</div></div>
+    <div class="shardrow"><div class="k">коммуницируется</div><div class="comm">${p.comm}</div></div>
+    <div style="margin-top:8px">${p.fl.map(f=>chip(f,f.split('/').pop())).join('')}</div>`;
+  linkify(d);
+}
+renderPar(PAR[1]);
+
+/* ---------------- СПЕК-ПУТЬ ---------------- */
+document.getElementById('specascii').textContent=
+`ПОСЛЕДНИЙ ранг   forward → sample → rejection-оракул → sampled[num_reqs, num_spec+1]
+                 → _pp_broadcast_prev_sampled_token_ids   (GPU-бродкаст, width-agnostic = B1a)
+                 → пропозал драфтов → _draft_token_ids
+                          │
+                          ▼
+НЕ-ПОСЛЕДНИЕ      _pp_receive_… : recv[num_reqs, num_spec+1]; сохранить; пересобрать
+                 prev_req_id_to_index  (ПОСЛЕ condense → риск устаревшей карты, W6)
+                 → следующий шаг _prepare_input_ids:
+                      common (prev_pos ≥ 0): scatter recv[:,0] → input_ids        ✓
+                      non-common (prev_pos < 0): РАННИЙ ВЫХОД → читает token_ids_cpu,
+                                                 где ещё лежит -1 → EMBED OOB       ✗  break #2
+ПЛАНИРОВЩИК      AsyncScheduler резервирует -1-плейсхолдеры даже для запросов, которые
+                 не получат перезапись от воркера  → корневая причина = upstream PR #40768`;
+const SPEC=[
+  {t:'Proposer (драфтер)',d:`ngram / ngram_gpu / EAGLE / <b>MTP</b> / draft-model. MTP переиспользует финальный
+    hidden state таргета (резидентный на последнем ранге) → почти нулевые доп. вычисления/PCIe.
+    ${chip('vllm/v1/spec_decode/llm_base_proposer.py:427','llm_base_proposer.py:427 propose')}`},
+  {t:'Транспорт (B1a, сделано)',d:`Новый CUDA-free <span class="mono">pp_spec_broadcast.py</span> делает бродкаст
+    width-agnostic (<code>[num_reqs, num_spec+1]</code>), протестирован на gloo, проверен мимо старого ассерта
+    <code>[num_reqs,1]</code> на реальном MiMo-7B PP=2+MTP.
+    ${chip('vllm/v1/worker/pp_spec_broadcast.py:21','pp_spec_broadcast.py:21')}`},
+  {t:'break #2 (гейт)',d:`<code>-1</code>-плейсхолдер протекает в embedding-lookup на не-последнем ранге, когда запрос
+    становится «non-common». Корневая причина = upstream <b>PR #40768</b> («stale async placeholder tokens», чинит #37159) —
+    дисциплина на стороне планировщика, комплементарная к B1a.
+    ${chip('vllm/v1/core/sched/async_scheduler.py:31','async_scheduler.py:31 источник -1')}`},
+  {t:'Учёт (C4)',d:`Продвижение <code>num_tokens_no_spec</code> гейтнуто на ngram; гибридный MTP использует
+    <span class="mono">_update_states_after_model_execute</span>. Их надо примирить method-agnostic (Q17).
+    ${chip('vllm/v1/worker/gpu_model_runner.py:1502','gpu_model_runner.py:1502 гибридный счёт')}`},
+];
+const sc=document.getElementById('speccards');
+SPEC.forEach(s=>{const c=document.createElement('div');c.className='card';
+  c.innerHTML=`<div style="font-weight:600;margin-bottom:4px">${s.t}</div><div style="font-size:13px">${s.d}</div>`;
+  sc.appendChild(c);});
+linkify(sc);
+
+/* ---------------- ГЛОССАРИЙ ---------------- */
+const GLOSS=[
+  ['EngineCore','«движок»','только <b>логика</b> (планировщик+исполнитель+KV); транспорт — отдельные EngineCoreProc/EngineCoreClient','vllm/v1/engine/core.py:95'],
+  ['client/engine split','сетевой клиент','движок в процессе vs обёрнутый в ZMQ; у InprocClient сокетов нет','vllm/v1/engine/core_client.py:1'],
+  ['batch_queue','FIFO-очередь батчей','<b>конвейерное кольцо</b> futures (deque(maxlen=pp_size)); применяешь САМЫЙ СТАРЫЙ, планируя новейший','vllm/v1/engine/core.py:192'],
+  ['async scheduling','Python asyncio','<b>перекрытие планирования и исполнения</b>: планируем N+1 до возврата N, через -1-плейсхолдеры. Цикл движка — обычный while.','vllm/v1/core/sched/async_scheduler.py:12'],
+  ['AsyncLLM vs async_scheduling','одно и то же «async»','<b>разное</b>: AsyncLLM = asyncio-фронтенд; async_scheduling = режим перекрытия в движке','vllm/v1/engine/async_llm.py:70'],
+  ['continuous batching','один большой катящийся батч','объекта батча нет — каждый шаг пересобирает running-набор по бюджету токенов','vllm/v1/core/sched/scheduler.py:336'],
+  ['chunked prefill','особый режим prefill','просто кламп бюджета на num_new_tokens; промпт съедается за несколько шагов','vllm/v1/core/sched/scheduler.py:336'],
+  ['prefix caching','общая KV-дедупликация','поиск самого длинного закешированного префикса блоков по хешу; последний токен всегда пересчитывается','vllm/v1/core/kv_cache_manager.py:196'],
+  ['PagedAttention','ядро (kernel)','раскладка памяти: KV в фикс-блоках + block table + slot mapping','vllm/v1/worker/block_table.py:70'],
+  ['num_computed_tokens','токены, что посчитал GPU','<b>счётчик решения планировщика</b>; откатывается при rejection, обнуляется при преемпции','vllm/v1/request.py:149'],
+  ['num_tokens_with_spec','«токены, спек включён»','оптимистичная длина ЕСЛИ все драфты приняты = num_tokens + len(spec_token_ids)','vllm/v1/request.py:253'],
+  ['num_output_placeholders','размер буфера вывода','async-only счётчик обещанных, но ещё не материализованных выходных токенов','vllm/v1/request.py:141'],
+  ['persistent batch / InputBatch','просто батч','CPU-буферы, переиспользуемые между шагами, чтобы не пересобирать тензоры','vllm/v1/worker/gpu_input_batch.py:91'],
+  ['condense','сжать данные','<b>уплотнить</b> плотный префикс запросов после удалений (своп слотов)','vllm/v1/worker/gpu_input_batch.py:683'],
+  ['GroupCoordinator','планировщик/лидер','обёртка над ProcessGroup (device + cpu группы) на каждую ось параллелизма','vllm/distributed/parallel_state.py:290'],
+  ['IntermediateTensors','произвольные тензоры','словарь {hidden_states, residual}, пересекающий границу PP-стадии','vllm/sequence.py:12'],
+  ['drafter / proposer','две сущности','одна сущность — генератор спекулятивного драфта','vllm/v1/spec_decode/llm_base_proposer.py:427'],
+  ['bonus token','награда','бесплатный токен таргета, выдаваемый когда ВСЕ драфты приняты','vllm/v1/sample/rejection_sampler.py:30'],
+  ['rejection sampling (greedy)','вероятностный accept/reject','<b>детерминированное совпадение argmax</b> — не зависит от весов; «rejection sampling» буквально лишь у не-greedy пути','vllm/v1/sample/rejection_sampler.py:708'],
+  ['PLACEHOLDER_TOKEN_ID / -1','настоящий токен','сентинел для отклонённых/паддинг-позиций; OOB если попадёт в embedding-lookup (break #2)','vllm/v1/sample/rejection_sampler.py:30'],
+  ['uniproc / multiproc executor','пулы потоков','воркер в процессе vs один ОС-процесс на ранг (ZMQ/MQ)','vllm/v1/executor/multiproc_executor.py:103'],
+  ['V1 vs V2 runner','версии vLLM','две реализации раннера; V2 уменьшает PP-пузыри, но гейтнут на non-MoE/non-quantized whitelisted-архитектуры (не наш Qwen3.5)','vllm/config/vllm.py:497'],
+  ['EP / EPLB','«всё параллельно»','MoE expert parallel (all-to-all); EPLB = отдельная группа для балансировочных коллективов','vllm/distributed/parallel_state.py:1289'],
+  ['PCP / DCP','один «context parallel»','prefill vs decode контекст(-последовательность) параллель; DCP переиспользует GPU из TP (dcp_size ≤ tp_size)','vllm/distributed/parallel_state.py:1313'],
+  ['post_step','общий хук','СИНХРОННЫй спек-путь забора драфт-токенов; no-op под async','vllm/v1/engine/core.py:474'],
+  ['ModelRunnerOutput','содержит драфт-токены','НЕТ поля spec_token_ids — драфты едут через отдельный DraftTokenIds','vllm/v1/outputs.py:234'],
+];
+const gbody=document.getElementById('glossbody');
+GLOSS.forEach(([term,assume,real,fl])=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td class="gterm">${term}</td>
+    <td class="gassume">≠ ${assume}</td>
+    <td class="greal">${real}<br>${chip(fl,fl.split('/').slice(-1)[0])}</td>`;
+  tr.dataset.s=(term+' '+assume+' '+real+' '+fl).toLowerCase();
+  gbody.appendChild(tr);
+});
+linkify(gbody);
+document.getElementById('search').addEventListener('input',e=>{
+  const q=e.target.value.toLowerCase().trim();
+  gbody.querySelectorAll('tr').forEach(tr=>{
+    tr.classList.toggle('ghide', q && !tr.dataset.s.includes(q));
+  });
+});
+
+/* ---------------- СЛАБЫЕ МЕСТА ---------------- */
+const WEAK=[
+  {id:'W1',sev:'high',t:'God-объект gpu_model_runner.py (~7 583 строки)',
+   d:'Forward, внимание, сэмплинг, спек, PP, мультимодал, pooling, cudagraphs, профилирование в одном классе с переплетёнными ветками is_last_rank / is_ngram_gpu / use_async_spec_decode.',
+   clean:'Вынести SpecDecodeFlow / SamplingFlow / PPTransport как коллабораторов за типизированными интерфейсами; раннер оркестрирует, а не реализует.',
+   up:'частично — V2-раннер (#42187), нам недоступен (квантованный гибрид)',
+   fl:'vllm/v1/worker/gpu_model_runner.py:422'},
+  {id:'W2',sev:'high',t:'Нет владельца стейт-машины запроса',
+   d:'request.status = … и счётчики токенов мутируются из множества мест планировщика; FSM неявная и хрупкая (нет даже assert num_rejected ≤ num_computed_tokens).',
+   clean:'Владелец RequestState с защищёнными переходами + единый метод учёта; проверять инварианты.',
+   up:'нет', fl:'vllm/v1/core/sched/scheduler.py:1446'},
+  {id:'W3',sev:'high',t:'-1-плейсхолдеры + optimistic extend/correct (break #2)',
+   d:'-1 эмитится и планировщиком, и раннером, а бэкфилл только на common-пути → протечка на non-common/re-added запросах → embed OOB.',
+   clean:'Типизированный SampledTokenGrid + «эмитить -1 только если заполнимо» (req ∈ prev_step_scheduled_req_ids).',
+   up:'ДА — PR #40768 (чинит #37159); наш B1a — комплементарная воркерная половина',
+   fl:'vllm/v1/core/sched/async_scheduler.py:31'},
+  {id:'W4',sev:'high',t:'Двойной sync/async путь драфт-токенов без общей абстракции',
+   d:'Sync тянет через post_step→take_draft_token_ids; async внедряет в воркере. Sync ДЕДЛОЧИТСЯ на MTP+PP; async ПАДАЕТ.',
+   clean:'Единая абстракция DraftTokenChannel с двумя бэкендами за типизированным контрактом (кирпич 81 C2).',
+   up:'частично (#39704 sync, #40768 async)', fl:'vllm/v1/engine/core.py:474'},
+  {id:'W5',sev:'med',t:'Учёт, гейтнутый на is_ngram_gpu, оставил MTP позади',
+   d:'Продвижение/коррекция num_tokens_no_spec гейтнуты на ngram_gpu; гибридный MTP идёт через _update_states_after_model_execute. Они не композятся → непоследовательный учёт MTP (Q17).',
+   clean:'Method-agnostic учёт accepted-count; примирить асимметрию ngram/hybrid целостно (наш C4).',
+   up:'нет', fl:'vllm/v1/worker/gpu_model_runner.py:1502'},
+  {id:'W6',sev:'med',t:'prev_req_id_to_index пересобирается после condense()',
+   d:'Персистентный батч переупорядочивается, потом карта индексов прошлого шага пересобирается — риск устаревшей карты под k-шаговой задержкой конвейера.',
+   clean:'condense() возвращает ремап индексов; потребители используют его, без post-hoc реконструкции.',
+   up:'нет', fl:'vllm/v1/worker/gpu_input_batch.py:683'},
+  {id:'W7',sev:'low',t:'deque(maxlen=…) молча роняет при переполнении',
+   d:'batch_queue держится на инварианте pop-перед-append; изменение, добавляющее без pop, молча уронит future и застопорит конвейер без ошибки.',
+   clean:'Ограниченная очередь, которая бросает исключение при переполнении, или явный assert на append.',
+   up:'нет', fl:'vllm/v1/engine/core.py:192'},
+  {id:'W8',sev:'low',t:'Нет спек-бродкаст-хелпера в координаторе',
+   d:'Бродкаст сэмплированных токенов написан вручную в раннере (теперь вынесен в pp_spec_broadcast.py), отдельно от GroupCoordinator — PP спек-транспорт живёт вне распределённой абстракции.',
+   clean:'Оставить CUDA-free хелпер (удобно для gloo-тестов), но зарегистрировать как метод координатора, чтобы контракт был обнаружим.',
+   up:'наш B1a (сделано)', fl:'vllm/v1/worker/pp_spec_broadcast.py:32'},
+  {id:'W9',sev:'low',t:'IntermediateTensors — нетипизированный dict[str, Tensor]',
+   d:'PP-стадии должны договориться о ключах (hidden_states/residual) по соглашению; несовпадение = рантайм-KeyError.',
+   clean:'Frozen dataclass с типизированными полями.',
+   up:'нет', fl:'vllm/sequence.py:12'},
+  {id:'W10',sev:'low',t:'array_like msgspec-структуры делают порядок полей wire-контрактом',
+   d:'Добавление/перестановка поля в EngineCoreRequest/EngineCoreOutputs молча ломает кросс-версионную совместимость.',
+   clean:'Версионированная схема или именованное (map) кодирование для критичных к эволюции структур.',
+   up:'нет', fl:'vllm/v1/engine/__init__.py:83'},
+];
+const sevName={high:'ВЫС',med:'СРЕД',low:'НИЗ'};
+const sevbar=document.getElementById('sevbar');
+[['all','все'],['high','ВЫС'],['med','СРЕД'],['low','НИЗ']].forEach(([s,lab],i)=>{
+  const b=document.createElement('button'); b.textContent=lab; if(i===0)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#sevbar button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    document.querySelectorAll('#weakcards .card').forEach(c=>{c.style.display=(s==='all'||c.dataset.sev===s)?'':'none';});};
+  sevbar.appendChild(b);
+});
+const wc=document.getElementById('weakcards');
+WEAK.forEach(w=>{
+  const c=document.createElement('div'); c.className='card'; c.dataset.sev=w.sev;
+  c.innerHTML=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span class="pill sev-${w.sev}">${w.id} · ${sevName[w.sev]}</span>
+      <span style="font-weight:600">${w.t}</span></div>
+    <div style="font-size:13.5px;margin-bottom:6px">${w.d}</div>
+    <div style="font-size:13px;color:var(--muted)"><b style="color:var(--accent2)">чистый дизайн:</b> ${w.clean}</div>
+    <div style="font-size:12.5px;margin-top:6px"><b class="muted">апстрим:</b> ${w.up} &nbsp; ${chip(w.fl,w.fl.split('/').slice(-1)[0])}</div>`;
+  wc.appendChild(c);
+});
+linkify(wc);
+</script>
+</body>
+</html>

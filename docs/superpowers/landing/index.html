@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM V1 Execution Pipeline — interactive map</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#30363d;
+    --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --accent2:#3fb950;
+    --warn:#d29922; --bad:#f85149; --spec:#bc8cff; --code:#79c0ff;
+    --chip:#21262d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  header{padding:26px 22px 14px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#11161f,#0d1117)}
+  header h1{margin:0 0 4px;font-size:25px;letter-spacing:.2px}
+  header p{margin:0;color:var(--muted);max-width:1000px}
+  .tag{display:inline-block;background:var(--chip);border:1px solid var(--line);
+    color:var(--muted);border-radius:999px;padding:1px 9px;font-size:12px;margin-left:6px}
+  nav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:4px;
+    padding:8px 16px;background:#0d1117ee;backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line)}
+  nav button{background:transparent;border:1px solid transparent;color:var(--muted);
+    padding:6px 12px;border-radius:7px;cursor:pointer;font-size:13.5px}
+  nav button:hover{color:var(--fg);background:var(--panel)}
+  nav button.active{color:var(--fg);background:var(--panel2);border-color:var(--line)}
+  main{max-width:1180px;margin:0 auto;padding:22px 18px 90px}
+  section{display:none;animation:fade .2s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  h2{font-size:20px;margin:6px 0 4px;border-left:3px solid var(--accent);padding-left:10px}
+  .sub{color:var(--muted);margin:0 0 18px;padding-left:13px}
+  .grid{display:grid;gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .fl{font-family:ui-monospace,monospace;font-size:12.5px;color:var(--code);
+    background:#0b1828;border:1px solid #18324d;border-radius:5px;padding:1px 6px;
+    white-space:nowrap;display:inline-block;margin:2px 3px 2px 0}
+  .fl:hover{background:#102a44}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;border-radius:999px;padding:1px 9px;
+    border:1px solid var(--line)}
+  .sev-high{background:#3d1418;border-color:#6e2329;color:#ff9a92}
+  .sev-med{background:#3a2d10;border-color:#6e561d;color:#f1c057}
+  .sev-low{background:#15291a;border-color:#23502f;color:#7ee29a}
+
+  /* flow diagram */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:6px 0 18px}
+  .node{flex:1 1 120px;min-width:120px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:11px 10px;cursor:pointer;text-align:center;position:relative;
+    transition:.15s}
+  .node:hover{border-color:var(--accent);transform:translateY(-2px)}
+  .node.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .node .t{font-weight:600;font-size:14px}
+  .node .s{font-size:11px;color:var(--muted);margin-top:2px}
+  .node.proc-front{border-top:3px solid #6e9bff}
+  .node.proc-core{border-top:3px solid var(--accent2)}
+  .node.proc-worker{border-top:3px solid var(--spec)}
+  .arrow{align-self:center;color:var(--muted);font-size:20px;padding:0 2px;user-select:none}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .legend i{display:inline-block;width:22px;height:3px;vertical-align:middle;margin-right:5px}
+  #detail{min-height:120px}
+
+  /* stepper */
+  .steps{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+  .step{flex:1 1 0;min-width:96px;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;padding:9px 8px;cursor:pointer;text-align:center;font-size:12.5px;
+    position:relative}
+  .step.on{border-color:var(--accent);background:var(--panel2)}
+  .step .n{font-size:10px;color:var(--muted)}
+  .stepbtns{display:flex;gap:8px;margin:10px 0}
+  .stepbtns button{background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+    padding:7px 16px;border-radius:8px;cursor:pointer}
+  .stepbtns button:hover{border-color:var(--accent)}
+
+  /* pipeline timeline */
+  .modebar{display:flex;gap:8px;margin:6px 0 14px}
+  .modebar button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+    padding:7px 14px;border-radius:8px;cursor:pointer}
+  .modebar button.on{color:var(--fg);background:var(--panel2);border-color:var(--accent)}
+  table.tl{border-collapse:collapse;margin:6px 0}
+  table.tl td,table.tl th{border:1px solid var(--line);padding:6px 9px;text-align:center;
+    font-size:12.5px;min-width:54px}
+  table.tl th{color:var(--muted);font-weight:500}
+  .mb{border-radius:5px;padding:2px 6px;font-size:11.5px;display:inline-block}
+  .mb-sched{background:#16324f;color:#9cce5e}
+  .mb-exec{background:#163d22;color:#9ae6a4}
+  .mb-apply{background:#3a2350;color:#d7b3ff}
+  .mb-bubble{color:#586069}
+
+  /* glossary */
+  .search{width:100%;padding:11px 14px;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;color:var(--fg);font-size:14px;margin-bottom:12px}
+  .gloss{border-collapse:collapse;width:100%}
+  .gloss td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:top}
+  .gloss tr:hover{background:var(--panel)}
+  .gterm{font-weight:600;white-space:nowrap}
+  .gassume{color:var(--bad);font-size:12.5px}
+  .greal{font-size:13px}
+  .ghide{display:none}
+
+  /* parallelism */
+  .ptabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .ptabs button{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+    padding:6px 14px;border-radius:8px;cursor:pointer}
+  .ptabs button.on{color:var(--fg);background:var(--panel2);border-color:var(--accent)}
+  .shardrow{display:grid;grid-template-columns:110px 1fr;gap:10px;margin:6px 0}
+  .shardrow .k{color:var(--muted);font-size:13px;text-align:right;padding-top:6px}
+  .gpu{display:inline-block;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:8px 12px;margin:3px;font-size:12.5px;min-width:90px;text-align:center}
+  .gpu b{display:block;color:var(--accent)}
+  .comm{font-size:12.5px;color:var(--warn)}
+
+  .note{background:#0b1828;border:1px solid #18324d;border-radius:8px;padding:10px 13px;
+    font-size:13px;color:#bcd6f0;margin:10px 0}
+  .specpath{background:#1a1228;border:1px solid #4a2d6e;border-radius:8px;padding:10px 13px;
+    font-size:13px;color:#e0d0f5;margin:10px 0}
+  pre.ascii{background:#0a0e14;border:1px solid var(--line);border-radius:9px;padding:13px;
+    overflow:auto;font-size:12px;line-height:1.4;color:#b9c4d0}
+  .kbd{font-size:11px;color:var(--muted)}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:20px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>vLLM V1 — the execution pipeline, clickable <span class="tag">read-only research</span></h1>
+  <p>Every block links to <span class="mono" style="color:var(--code)">file:line</span> in
+  <a href="https://github.com/vllm-project/vllm">vllm-project/vllm</a>. Companion to
+  <span class="mono">PIPELINE.md</span> and the bricks under
+  <span class="mono">docs/superpowers/research/pp-mtp/</span>. Line numbers are anchors
+  (working tree <span class="mono">e45e5d462</span>) — re-grep if drifted. The
+  <span style="color:var(--spec)">violet</span> path = speculative-token flow under PP, the code we are changing.</p>
+</header>
+
+<nav id="nav"></nav>
+<main>
+
+<!-- ===================== ARCHITECTURE ===================== -->
+<section id="arch" class="active">
+  <h2>Top architecture &amp; process model</h2>
+  <p class="sub">Click a block. Three process tiers joined by ZMQ (frontend↔core) and executor RPC (core↔workers).</p>
+  <div class="legend">
+    <span><i style="background:#6e9bff"></i>Frontend process</span>
+    <span><i style="background:#3fb950"></i>EngineCore process</span>
+    <span><i style="background:#bc8cff"></i>Worker process(es), 1/rank</span>
+  </div>
+  <div class="flow" id="flow"></div>
+  <div class="card" id="detail"><span class="muted">Select a component above…</span></div>
+</section>
+
+<!-- ===================== LIFECYCLE ===================== -->
+<section id="life">
+  <h2>Request lifecycle — step through it</h2>
+  <p class="sub">One decode iteration of a speculative request under PP. Use the buttons or click a stage.</p>
+  <div class="steps" id="steps"></div>
+  <div class="stepbtns">
+    <button onclick="stepMove(-1)">‹ Prev</button>
+    <button onclick="stepMove(1)">Next ›</button>
+    <span class="kbd" style="align-self:center">← / → keys also work</span>
+  </div>
+  <div class="card" id="stepDetail"></div>
+  <div class="card" style="margin-top:12px">
+    <b>The status machine</b> <span class="muted">(RequestStatus, IntEnum)</span>
+    <pre class="ascii">WAITING ──schedule()──▶ RUNNING ──stop/EOS/len──▶ FINISHED_{STOPPED,LENGTH_CAPPED,…}
+   ▲                       │
+   │                       ├──allocate_slots()==None──▶ PREEMPTED ──┐
+   └───────────────────────┘   (num_computed_tokens=0, free blocks) │
+   └─────────────────────────────────────────────◀──────────────────┘
+WAITING_FOR_{REMOTE_KVS, STRUCTURED_OUTPUT_GRAMMAR, STREAMING_REQ}  = blocked-waiting variants</pre>
+    <span class="muted">Edges are bare <span class="mono">request.status = …</span> assignments scattered across the scheduler — no single FSM owner (weak spot W2).</span>
+    <span class="fl" data-fl="vllm/v1/request.py:329">request.py:329 RequestStatus</span>
+  </div>
+</section>
+
+<!-- ===================== ENGINE MODES ===================== -->
+<section id="modes">
+  <h2>Engine loop modes &amp; the PP pipeline</h2>
+  <p class="sub">The engine picks <span class="mono">step</span> vs <span class="mono">step_with_batch_queue</span> once at init, based on <span class="mono">max_concurrent_batches&gt;1</span>.</p>
+  <div class="modebar" id="modebar"></div>
+  <div class="card" id="modeDetail"></div>
+  <div class="card" style="margin-top:12px">
+    <b>Microbatch timeline</b> — <span id="tlcap" class="muted"></span>
+    <div id="timeline"></div>
+    <div class="legend" style="margin-top:8px">
+      <span><span class="mb mb-sched">B<sub>n</sub></span> schedule + launch</span>
+      <span><span class="mb mb-exec">exec</span> GPU forward (in flight)</span>
+      <span><span class="mb mb-apply">apply</span> update_from_output</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PARALLELISM ===================== -->
+<section id="par">
+  <h2>Distributed parallelism — what is sharded / replicated / communicated</h2>
+  <p class="sub">One <span class="mono">GroupCoordinator</span> singleton per axis per process. <span class="fl" data-fl="vllm/distributed/parallel_state.py:290">parallel_state.py:290</span></p>
+  <div class="ptabs" id="ptabs"></div>
+  <div class="card" id="parDetail"></div>
+</section>
+
+<!-- ===================== SPEC PATH ===================== -->
+<section id="spec">
+  <h2>Speculative-token flow under PP <span class="tag" style="color:var(--spec);border-color:#4a2d6e">the path we change</span></h2>
+  <p class="sub">Last rank samples + runs the rejection oracle, broadcasts the grid; non-last ranks rebuild their next input. This is the bug-prone seam (bricks 40 / 80).</p>
+  <div class="specpath">
+    <b>The rejection oracle is the correctness gate.</b> Greedy: a draft token is accepted
+    <i>iff</i> it equals <span class="mono">target_logits.argmax(-1)</span>, else replaced by it →
+    output is a pure function of (target argmax, draft) → <b>weight-agnostic</b>. So dummy/MiMo weights
+    validate the cascade shape; only acceptance-rate needs real weights.
+    <span class="fl" data-fl="vllm/v1/sample/rejection_sampler.py:708">rejection_sampler.py:708</span>
+    <span class="fl" data-fl="vllm/v1/sample/rejection_sampler.py:452">:452 target_argmax</span>
+  </div>
+  <pre class="ascii" id="specascii"></pre>
+  <div class="grid" id="speccards" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))"></div>
+</section>
+
+<!-- ===================== GLOSSARY ===================== -->
+<section id="gloss">
+  <h2>Glossary — where vLLM's names mislead</h2>
+  <p class="sub">Search terms, assumptions, or file paths. Each row: vLLM term ↔ what people assume ↔ what it actually is.</p>
+  <input class="search" id="search" placeholder="filter… e.g. 'batch_queue', 'async', 'placeholder', 'condense'">
+  <table class="gloss"><tbody id="glossbody"></tbody></table>
+</section>
+
+<!-- ===================== WEAK SPOTS ===================== -->
+<section id="weak">
+  <h2>Weak spots &amp; "not the strongest solutions"</h2>
+  <p class="sub">Severity × entrenchment. Filter by severity. Top 5 by impact: W1, W2, W3, W4, W5.</p>
+  <div class="modebar" id="sevbar"></div>
+  <div class="grid" id="weakcards" style="grid-template-columns:1fr"></div>
+</section>
+
+</main>
+<footer>
+  Generated as a read-only research artifact under <span class="mono">docs/superpowers/landing/</span> — not committed.
+  Open directly in a browser (offline) or <span class="mono">python -m http.server</span> in this folder. See <span class="mono">PIPELINE.md</span> + <span class="mono">README.md</span>.
+</footer>
+
+<script>
+const GH = "https://github.com/vllm-project/vllm/blob/main/";
+function ghURL(fl){ // "path:line" -> github blob url
+  const i = fl.lastIndexOf(":"); const path=fl.slice(0,i); const line=fl.slice(i+1);
+  return GH+path+(/^\d+$/.test(line)?("#L"+line):"");
+}
+// turn any .fl[data-fl] chips into links (delegated, run after render)
+function linkify(root){
+  (root||document).querySelectorAll('.fl[data-fl]').forEach(el=>{
+    if(el.dataset.done) return; el.dataset.done=1;
+    const fl=el.dataset.fl; el.style.cursor='pointer';
+    el.title="open "+fl+" on GitHub";
+    el.onclick=()=>window.open(ghURL(fl),'_blank');
+  });
+}
+// helper to render a file:line chip from "path:line  label"
+function chip(fl,label){return `<span class="fl" data-fl="${fl}">${label||fl}</span>`;}
+
+/* ---------------- NAV ---------------- */
+const SECTIONS=[["arch","Architecture"],["life","Request lifecycle"],["modes","Engine modes & PP"],
+  ["par","Parallelism"],["spec","Spec under PP"],["gloss","Glossary"],["weak","Weak spots"]];
+const nav=document.getElementById('nav');
+SECTIONS.forEach(([id,label],i)=>{
+  const b=document.createElement('button'); b.textContent=label; b.dataset.id=id;
+  if(i===0)b.classList.add('active');
+  b.onclick=()=>{
+    document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('main section').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); document.getElementById(id).classList.add('active');
+    window.scrollTo(0,0);
+  };
+  nav.appendChild(b);
+});
+
+/* ---------------- ARCHITECTURE FLOW ---------------- */
+const NODES=[
+  {id:'client',proc:'front',t:'Client / Frontend',s:'AsyncLLM · LLMEngine',
+   body:`<b>The API surface.</b> <span class="mono">AsyncLLM</span> (asyncio, for the API server) or
+   <span class="mono">LLMEngine</span> (sync, offline). Tokenizes via the <b>Processor</b> →
+   <code>EngineCoreRequest</code>; streams <code>EngineCoreOutputs</code> back through the
+   <b>OutputProcessor</b> → Detokenizer + LogprobsProcessor.
+   ${chip('vllm/v1/engine/async_llm.py:70','async_llm.py:70 AsyncLLM')}
+   ${chip('vllm/v1/engine/llm_engine.py:47','llm_engine.py:47 LLMEngine')}
+   ${chip('vllm/v1/engine/input_processor.py:1','input_processor.py')}
+   ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')}`},
+  {id:'coreclient',proc:'front',t:'EngineCoreClient',s:'ZMQ / in-proc',
+   body:`<b>The transport facade.</b> <span class="mono">InprocClient</span> runs the engine in-process
+   (no sockets); <span class="mono">SyncMPClient</span>/<span class="mono">AsyncMPClient</span> put it behind
+   ZMQ (msgpack, <code>array_like</code> structs). Output side runs on a daemon thread / asyncio task so the
+   caller never blocks on serialization.
+   ${chip('vllm/v1/engine/core_client.py:1','core_client.py')}
+   ${chip('vllm/v1/engine/__init__.py:83','__init__.py:83 EngineCoreRequest')}`},
+  {id:'enginecore',proc:'core',t:'EngineCore',s:'the engine logic',
+   body:`<b>Logic only</b> — scheduler + executor + KV + structured-output, no I/O.
+   Wrapped by <span class="mono">EngineCoreProc</span> for a separate process: 2 daemon I/O threads +
+   a synchronous <span class="mono">run_busy_loop</span> calling <span class="mono">step_fn()</span> each iteration.
+   <i>Not asyncio.</i>
+   ${chip('vllm/v1/engine/core.py:95','core.py:95 EngineCore')}
+   ${chip('vllm/v1/engine/core.py:858','core.py:858 EngineCoreProc')}
+   ${chip('vllm/v1/engine/core.py:1216','core.py:1216 run_busy_loop')}`},
+  {id:'scheduler',proc:'core',t:'Scheduler',s:'continuous batching',
+   body:`<b>Token-budget catch-up loop.</b> No prefill/decode phases — each step assigns tokens so
+   <code>num_computed_tokens</code> catches up to <code>num_tokens_with_spec</code>. Handles chunked prefill,
+   prefix caching, preemption, KV block allocation. <span class="mono">AsyncScheduler</span> adds <code>-1</code>
+   placeholders to schedule ahead.
+   ${chip('vllm/v1/core/sched/scheduler.py:336','scheduler.py:336 schedule()')}
+   ${chip('vllm/v1/core/sched/scheduler.py:1348','scheduler.py:1348 update_from_output')}
+   ${chip('vllm/v1/core/sched/async_scheduler.py:12','async_scheduler.py:12')}`},
+  {id:'executor',proc:'core',t:'Executor',s:'uni / multiproc / ray',
+   body:`<b>Control plane.</b> <span class="mono">collective_rpc</span> broadcasts a call to all workers.
+   <span class="mono">UniProcExecutor</span> = one in-process worker; <span class="mono">MultiprocExecutor</span> =
+   one OS process per rank (shared-mem MessageQueues); Ray = actors + compiled DAG.
+   ${chip('vllm/v1/executor/abstract.py:37','abstract.py:37 Executor')}
+   ${chip('vllm/v1/executor/multiproc_executor.py:103','multiproc_executor.py:103')}`},
+  {id:'worker',proc:'worker',t:'Worker',s:'gpu_worker',
+   body:`<b>Per-rank GPU host.</b> <span class="mono">init_device</span>, <span class="mono">load_model</span>,
+   <b>determine_available_memory</b> (the KV-profiling dummy run that sizes <code>num_gpu_blocks</code>), and the
+   PP <code>IntermediateTensors</code> send/recv around the forward.
+   ${chip('vllm/v1/worker/gpu_worker.py:112','gpu_worker.py:112 Worker')}`},
+  {id:'runner',proc:'worker',t:'GPUModelRunner',s:'~7,583 lines',
+   body:`<b>The god object.</b> Persistent-batch reconcile (<span class="mono">_update_states</span>), input prep,
+   attention metadata, forward, sampling, spec propose, PP broadcast, multimodal, cudagraphs. The drafter exists
+   <b>only on the last PP rank</b>. (Weak spot W1.)
+   ${chip('vllm/v1/worker/gpu_model_runner.py:422','gpu_model_runner.py:422')}
+   ${chip('vllm/v1/worker/gpu_model_runner.py:1132','_update_states:1132')}
+   ${chip('vllm/v1/worker/gpu_model_runner.py:4010','execute_model:4010')}`},
+  {id:'sampler',proc:'worker',t:'Sampler / Spec',s:'rejection oracle',
+   body:`<b>The correctness oracle.</b> Sampler picks tokens; under spec the <b>rejection sampler</b> verifies drafts
+   (greedy = argmax-match → weight-agnostic). Output grid <code>[num_reqs, num_spec+1]</code>, <code>-1</code>-padded,
+   bonus token at the accepted tail. Then the drafter proposes the next K.
+   ${chip('vllm/v1/sample/rejection_sampler.py:30','rejection_sampler.py:30 PLACEHOLDER -1')}
+   ${chip('vllm/v1/sample/rejection_sampler.py:708','rejection_sampler.py:708 greedy')}
+   ${chip('vllm/v1/worker/pp_spec_broadcast.py:32','pp_spec_broadcast.py:32')}`},
+];
+const flow=document.getElementById('flow');
+NODES.forEach((n,i)=>{
+  const d=document.createElement('div'); d.className='node proc-'+n.proc; d.dataset.id=n.id;
+  d.innerHTML=`<div class="t">${n.t}</div><div class="s">${n.s}</div>`;
+  d.onclick=()=>{
+    document.querySelectorAll('.node').forEach(x=>x.classList.remove('sel'));
+    d.classList.add('sel');
+    const det=document.getElementById('detail');
+    det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${n.t}</div>${n.body}`;
+    linkify(det);
+  };
+  flow.appendChild(d);
+  if(i<NODES.length-1){const a=document.createElement('div');a.className='arrow';a.textContent='▸';flow.appendChild(a);}
+});
+flow.firstChild.click();
+
+/* ---------------- LIFECYCLE STEPPER ---------------- */
+const STEPS=[
+  {n:'1',t:'add_request',d:`Frontend tokenizes the prompt → <code>EngineCoreRequest</code>; the engine builds a
+    <code>Request</code> (status <b>WAITING</b>) and enqueues it. Token counters initialize:
+    <code>num_computed_tokens=0</code>, <code>spec_token_ids=[]</code>.
+    ${chip('vllm/v1/engine/core.py:95','core.py add_request')} ${chip('vllm/v1/request.py:329','request.py Request/Status')}`},
+  {n:'2',t:'schedule',d:`<b>Scheduler.schedule()</b>: token-budget loop admits the request (WAITING→<b>RUNNING</b>),
+    allocates KV blocks, packs draft tokens into <code>scheduled_spec_decode_tokens</code>, and (async) reserves
+    <code>-1</code> placeholders. Ships a <code>SchedulerOutput</code>.
+    ${chip('vllm/v1/core/sched/scheduler.py:336','scheduler.py:336')} ${chip('vllm/v1/core/sched/async_scheduler.py:31','async_scheduler.py:31 placeholders')}`},
+  {n:'3',t:'execute (PP)',d:`Executor <code>collective_rpc("execute_model")</code> to every rank.
+    <span class="mono">GPUModelRunner._update_states</span> reconciles the persistent batch (+<code>condense()</code>),
+    <span class="mono">_prepare_inputs</span> stages tensors, the model forwards. PP stages pass
+    <code>IntermediateTensors</code> stage→stage.
+    ${chip('vllm/v1/worker/gpu_model_runner.py:1132','_update_states:1132')} ${chip('vllm/v1/worker/gpu_model_runner.py:4010','execute_model:4010')}`},
+  {n:'4',t:'sample',d:`On the <b>last rank</b> only: logits → sampler → <code>sampled_token_ids</code>.
+    The result is captured in <code>ExecuteModelState</code>; sampling can be deferred (structured output) or split out
+    (<span class="mono">sample_tokens</span>) to overlap with the next stage.
+    ${chip('vllm/v1/worker/gpu_model_runner.py:4389','sample_tokens:4389')}`},
+  {n:'5',t:'spec verify',d:`<span style="color:var(--spec)">Spec path.</span> The <b>rejection sampler</b> verifies drafts
+    against the target argmax (greedy = exact match → weight-agnostic). Emits <code>[num_reqs, num_spec+1]</code>,
+    valid tokens contiguous from col 0, <code>-1</code> padding, bonus at the accepted tail. Last rank
+    <b>broadcasts</b> the grid to earlier ranks.
+    ${chip('vllm/v1/sample/rejection_sampler.py:708','rejection_sampler.py:708')} ${chip('vllm/v1/worker/pp_spec_broadcast.py:32','pp_spec_broadcast.py:32')}`},
+  {n:'6',t:'update_from_output',d:`Back in the engine (k≈pp_size−1 steps later under batch_queue):
+    <b>Scheduler.update_from_output</b> does rejection accounting — <code>num_accepted=len(gen)−1</code>,
+    <code>num_rejected=num_draft−num_accepted</code>, rolls back <code>num_computed_tokens</code> and
+    <code>num_output_placeholders</code>. Appends accepted tokens; checks stop.
+    ${chip('vllm/v1/core/sched/scheduler.py:1348','scheduler.py:1348')} ${chip('vllm/v1/core/sched/scheduler.py:1438','scheduler.py:1438 accounting')}`},
+  {n:'7',t:'detokenize',d:`<code>EngineCoreOutput</code> crosses back to the frontend. The
+    <b>IncrementalDetokenizer</b> converts new token ids → text, detects stop strings; the
+    <b>LogprobsProcessor</b> formats logprobs.
+    ${chip('vllm/v1/engine/detokenizer.py:1','detokenizer.py')} ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')}`},
+  {n:'8',t:'output',d:`The <b>OutputProcessor</b> yields a <code>RequestOutput</code> (streaming delta or final).
+    If the stop check fired, the request is <b>FINISHED_*</b>, its KV blocks freed. Otherwise it loops back to
+    <b>schedule</b> for the next token.
+    ${chip('vllm/v1/engine/output_processor.py:1','output_processor.py')} ${chip('vllm/v1/request.py:363','request.py:363 FinishReason')}`},
+];
+let curStep=0;
+const stepsEl=document.getElementById('steps');
+STEPS.forEach((s,i)=>{
+  const d=document.createElement('div'); d.className='step'; d.dataset.i=i;
+  d.innerHTML=`<div class="n">step ${s.n}</div>${s.t}`;
+  d.onclick=()=>{curStep=i;renderStep();};
+  stepsEl.appendChild(d);
+});
+function renderStep(){
+  document.querySelectorAll('.step').forEach((e,i)=>e.classList.toggle('on',i===curStep));
+  const s=STEPS[curStep];
+  const det=document.getElementById('stepDetail');
+  det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${s.n}. ${s.t}</div>${s.d}`;
+  linkify(det);
+}
+function stepMove(dir){curStep=(curStep+dir+STEPS.length)%STEPS.length;renderStep();}
+renderStep();
+document.addEventListener('keydown',e=>{
+  if(!document.getElementById('life').classList.contains('active'))return;
+  if(e.key==='ArrowRight')stepMove(1); if(e.key==='ArrowLeft')stepMove(-1);
+});
+
+/* ---------------- ENGINE MODES + TIMELINE ---------------- */
+const MODES=[
+  {id:'sync',t:'step (sync)',
+   body:`<b>One batch in flight.</b> <span class="mono">schedule → execute_model(non_block) → future.result()</span>
+   <i>blocks</i> the engine thread on the GPU → <span class="mono">update_from_output</span>. Used when
+   <code>max_concurrent_batches==1</code> (no PP, no async).
+   ${chip('vllm/v1/engine/core.py:443','core.py:443 step()')} ${chip('vllm/v1/engine/core.py:217','core.py:217 step_fn')}`,
+   pp:1,async:false},
+  {id:'bq',t:'step_with_batch_queue (PP)',
+   body:`<b>Pipelined.</b> Schedule step N, launch <span class="mono">execute_model(non_block)</span>,
+   <span class="mono">appendleft</span> to a <code>deque(maxlen=pp_size)</code>, and <b>early-return without waiting</b>
+   while the queue has room. Once full, <span class="mono">pop()</span> the <i>oldest</i> and apply it — so
+   <span class="mono">update_from_output</span> lags scheduling by <b>≈ pp_size−1 steps</b> (fills the pipeline).
+   The <code>SchedulerOutput</code> is a snapshot; spec/placeholder state may mutate before it is applied — the staleness
+   window where spec-under-PP correctness lives.
+   ${chip('vllm/v1/engine/core.py:484','core.py:484')} ${chip('vllm/config/vllm.py:497','vllm.py:497 max_concurrent_batches')}`,
+   pp:2,async:true},
+  {id:'post',t:'post_step (sync spec)',
+   body:`<b>The sync draft-token path.</b> After each <span class="mono">step_fn</span>, if <i>not</i> async:
+   pull <span class="mono">take_draft_token_ids()</span> → <span class="mono">scheduler.update_draft_token_ids()</span>.
+   Under async this is a <b>no-op</b> — the worker injects drafts instead. Two paths, no shared abstraction (W4); for
+   MTP+PP the sync path <b>deadlocks</b> and the async path <b>crashes</b>.
+   ${chip('vllm/v1/engine/core.py:474','core.py:474 post_step')}`,
+   pp:2,async:false},
+];
+const modebar=document.getElementById('modebar');
+MODES.forEach((m,i)=>{
+  const b=document.createElement('button'); b.textContent=m.t; if(i===1)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#modebar button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); renderMode(m);};
+  modebar.appendChild(b);
+});
+function renderMode(m){
+  const det=document.getElementById('modeDetail');
+  det.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:6px">${m.t}</div>${m.body}`;
+  linkify(det);
+  renderTimeline(m);
+}
+function renderTimeline(m){
+  const tl=document.getElementById('timeline');
+  const cap=document.getElementById('tlcap');
+  const T=7; // time columns
+  if(m.id==='sync'){
+    cap.textContent="sync: schedule→exec→apply happen in the SAME step; one batch at a time (no overlap).";
+    let h='<table class="tl"><tr><th>t→</th>'+Array.from({length:T},(_,t)=>`<th>${t}</th>`).join('')+'</tr>';
+    h+='<tr><th>batch</th>';
+    for(let t=0;t<T;t++){h+=`<td><span class="mb mb-sched">B${t}</span> <span class="mb mb-exec">x</span> <span class="mb mb-apply">a</span></td>`;}
+    h+='</tr></table>';
+    tl.innerHTML=h;
+    return;
+  }
+  // pipelined pp=2: schedule at t, exec spans t..t+1, apply at t+ (pp-1)
+  const pp=2;
+  cap.textContent=`pipelined PP=${pp}: batch B${'ₙ'} is scheduled at t, executes across ${pp} stages, applied at t+${pp-1}. Fill bubble = first ${pp-1} steps. update_from_output lags by ${pp-1}.`;
+  let h='<table class="tl"><tr><th>stage \\ t→</th>'+Array.from({length:T},(_,t)=>`<th>${t}</th>`).join('')+'</tr>';
+  const rows=[['schedule','mb-sched','B'],['rank0 exec','mb-exec'],['rank1 exec','mb-exec'],['apply (update)','mb-apply']];
+  // schedule row
+  h+='<tr><th>schedule</th>';
+  for(let t=0;t<T;t++) h+=`<td><span class="mb mb-sched">B${t}</span></td>`;
+  h+='</tr>';
+  // rank0 executes B_t at time t
+  h+='<tr><th>rank0 forward</th>';
+  for(let t=0;t<T;t++) h+=`<td><span class="mb mb-exec">B${t}</span></td>`;
+  h+='</tr>';
+  // rank1 executes B_t at time t+1 (pipeline stagger)
+  h+='<tr><th>rank1 forward</th>';
+  for(let t=0;t<T;t++){ const b=t-1; h+=`<td>${b<0?'<span class="mb mb-bubble">·bubble·</span>':`<span class="mb mb-exec">B${b}</span>`}</td>`;}
+  h+='</tr>';
+  // apply at t+(pp-1)
+  h+='<tr><th>apply B<sub>n</sub></th>';
+  for(let t=0;t<T;t++){ const b=t-(pp-1); h+=`<td>${b<0?'<span class="mb mb-bubble">·</span>':`<span class="mb mb-apply">B${b}</span>`}</td>`;}
+  h+='</tr></table>';
+  tl.innerHTML=h;
+}
+renderMode(MODES[1]);
+
+/* ---------------- PARALLELISM ---------------- */
+const PAR=[
+  {id:'TP',t:'Tensor (TP)',
+   shard:'weights <i>within</i> a layer (Column/Row-ParallelLinear, vocab embedding)',
+   repl:'input ids',
+   comm:'all-reduce / all-gather of activations <b>every layer</b> (PCIe-heavy → avoided on the no-NVLink pair)',
+   fl:['vllm/model_executor/layers/linear.py:407','vllm/model_executor/layers/linear.py:1389'],
+   draw:`<div><span class="gpu"><b>GPU0</b>W[:, :h/2]</span><span class="gpu"><b>GPU1</b>W[:, h/2:]</span></div>
+         <div class="comm">→ all-reduce after each layer</div>`},
+  {id:'PP',t:'Pipeline (PP)',
+   shard:'layers <i>across</i> ranks (make_layers + get_pp_indices)',
+   repl:'—',
+   comm:'IntermediateTensors {hidden_states, residual} sent stage→stage (small, point-to-point)',
+   fl:['vllm/distributed/utils.py:109','vllm/distributed/parallel_state.py:852','vllm/sequence.py:12'],
+   draw:`<div><span class="gpu"><b>rank0</b>layers 0..k<br>+embed</span> <span class="arrow">▸</span>
+         <span class="gpu"><b>rank1</b>layers k..L<br>+norm+lm_head<br>+<span style="color:var(--spec)">drafter</span></span></div>
+         <div class="comm">→ send {hidden,residual} once per stage boundary</div>`},
+  {id:'DP',t:'Data (DP)',
+   shard:'the batch (different requests per replica)',
+   repl:'the whole model',
+   comm:'wave/load coordination + per-step request-count sync (DP coordinator)',
+   fl:['vllm/v1/engine/coordinator.py:23','vllm/v1/engine/core.py:1676'],
+   draw:`<div><span class="gpu"><b>replica A</b>full model<br>reqs 0..n</span>
+         <span class="gpu"><b>replica B</b>full model<br>reqs n..m</span></div>
+         <div class="comm">→ coordinator syncs waves; no weight comm</div>`},
+  {id:'EP',t:'Expert (EP)',
+   shard:'MoE experts across ranks (FusedMoE); group = DP×PCP×TP, one per PP stage',
+   repl:'non-expert weights',
+   comm:'all-to-all of tokens to/from their experts',
+   fl:['vllm/distributed/parallel_state.py:1289'],
+   draw:`<div><span class="gpu"><b>GPU0</b>experts 0..e/2</span><span class="gpu"><b>GPU1</b>experts e/2..e</span></div>
+         <div class="comm">→ all-to-all: route each token to its expert &amp; back</div>`},
+  {id:'CP',t:'Context (PCP/DCP)',
+   shard:'the sequence/context dimension (PCP=prefill, DCP=decode)',
+   repl:'model',
+   comm:'all-gather / all-reduce (or all-to-all) of Q/K/V slices; DCP reuses TP GPUs (dcp_size ≤ tp_size)',
+   fl:['vllm/distributed/parallel_state.py:1313','vllm/distributed/parallel_state.py:1265'],
+   draw:`<div><span class="gpu"><b>GPU0</b>seq[:, :n/2]</span><span class="gpu"><b>GPU1</b>seq[:, n/2:]</span></div>
+         <div class="comm">→ all-gather KV slices during attention</div>`},
+];
+const ptabs=document.getElementById('ptabs');
+PAR.forEach((p,i)=>{
+  const b=document.createElement('button'); b.textContent=p.t; if(i===1)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#ptabs button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); renderPar(p);};
+  ptabs.appendChild(b);
+});
+function renderPar(p){
+  const d=document.getElementById('parDetail');
+  d.innerHTML=`<div style="font-weight:600;font-size:16px;margin-bottom:8px">${p.t}</div>
+    ${p.draw}
+    <div class="shardrow"><div class="k">sharded</div><div>${p.shard}</div></div>
+    <div class="shardrow"><div class="k">replicated</div><div>${p.repl}</div></div>
+    <div class="shardrow"><div class="k">communicated</div><div class="comm">${p.comm}</div></div>
+    <div style="margin-top:8px">${p.fl.map(f=>chip(f,f.split('/').pop())).join('')}</div>`;
+  linkify(d);
+}
+renderPar(PAR[1]);
+
+/* ---------------- SPEC PATH ---------------- */
+document.getElementById('specascii').textContent=
+`LAST rank   forward → sample → rejection oracle → sampled[num_reqs, num_spec+1]
+            → _pp_broadcast_prev_sampled_token_ids   (GPU broadcast, width-agnostic = B1a)
+            → propose drafts → _draft_token_ids
+                    │
+                    ▼
+NON-LAST    _pp_receive_… : recv[num_reqs, num_spec+1]; store; rebuild
+            prev_req_id_to_index  (AFTER condense → stale-map risk, W6)
+            → next step _prepare_input_ids:
+                 common (prev_pos ≥ 0): scatter recv[:,0] → input_ids        ✓
+                 non-common (prev_pos < 0): EARLY RETURN → reads token_ids_cpu
+                                            which still holds -1 → EMBED OOB  ✗  break #2
+SCHEDULER   AsyncScheduler reserves -1 placeholders even for requests that
+            won't get the worker overwrite  → root cause = upstream PR #40768`;
+const SPEC=[
+  {t:'Proposer (drafter)',d:`ngram / ngram_gpu / EAGLE / <b>MTP</b> / draft-model. MTP reuses the target's final
+    hidden state (resident on the last rank) → near-zero extra compute/PCIe.
+    ${chip('vllm/v1/spec_decode/llm_base_proposer.py:427','llm_base_proposer.py:427 propose')}`},
+  {t:'Transport (B1a, done)',d:`New CUDA-free <span class="mono">pp_spec_broadcast.py</span> makes the broadcast
+    width-agnostic (<code>[num_reqs, num_spec+1]</code>), gloo-tested, validated past the old <code>[num_reqs,1]</code>
+    assert on real MiMo-7B PP=2+MTP.
+    ${chip('vllm/v1/worker/pp_spec_broadcast.py:21','pp_spec_broadcast.py:21')}`},
+  {t:'break #2 (the gate)',d:`A <code>-1</code> placeholder leaks into an embedding lookup on the non-last rank when a
+    request goes "non-common". Root cause = upstream <b>PR #40768</b> ("stale async placeholder tokens", fixes #37159) —
+    a scheduler-side discipline complementary to B1a.
+    ${chip('vllm/v1/core/sched/async_scheduler.py:31','async_scheduler.py:31 -1 origin')}`},
+  {t:'Accounting (C4)',d:`The <code>num_tokens_no_spec</code> advance is ngram-gated; hybrid MTP uses
+    <span class="mono">_update_states_after_model_execute</span>. These must be reconciled method-agnostically (Q17).
+    ${chip('vllm/v1/worker/gpu_model_runner.py:1502','gpu_model_runner.py:1502 hybrid count')}`},
+];
+const sc=document.getElementById('speccards');
+SPEC.forEach(s=>{const c=document.createElement('div');c.className='card';
+  c.innerHTML=`<div style="font-weight:600;margin-bottom:4px">${s.t}</div><div style="font-size:13px">${s.d}</div>`;
+  sc.appendChild(c);});
+linkify(sc);
+
+/* ---------------- GLOSSARY ---------------- */
+const GLOSS=[
+  ['EngineCore','"the engine"','only the <b>logic</b> (scheduler+executor+KV); transport is a separate EngineCoreProc/EngineCoreClient','vllm/v1/engine/core.py:95'],
+  ['client/engine split','a network client','in-process vs ZMQ-wrapped engine; InprocClient has no sockets','vllm/v1/engine/core_client.py:1'],
+  ['batch_queue','a FIFO backlog of batches','a <b>pipelining ring</b> of in-flight futures (deque(maxlen=pp_size)); you apply the OLDEST while scheduling the newest','vllm/v1/engine/core.py:192'],
+  ['async scheduling','Python asyncio','<b>scheduler/execution overlap</b>: schedule N+1 before N returns, via -1 placeholders. The engine loop is a plain while.','vllm/v1/core/sched/async_scheduler.py:12'],
+  ['AsyncLLM vs async_scheduling','the same "async"','<b>different</b>: AsyncLLM = asyncio frontend; async_scheduling = engine overlap mode','vllm/v1/engine/async_llm.py:70'],
+  ['continuous batching','one big rolling batch','no batch object — each step re-derives the running set from a token budget','vllm/v1/core/sched/scheduler.py:336'],
+  ['chunked prefill','a special prefill mode','just the token-budget clamp on num_new_tokens; prompt consumed across steps','vllm/v1/core/sched/scheduler.py:336'],
+  ['prefix caching','generic KV dedup','longest-cached-block-prefix lookup by block hash; last token always recomputed','vllm/v1/core/kv_cache_manager.py:196'],
+  ['PagedAttention','a kernel','a memory layout: KV in fixed blocks + block table + slot mapping','vllm/v1/worker/block_table.py:70'],
+  ['num_computed_tokens','tokens the GPU computed','a <b>scheduler decision counter</b>; rolls back on rejection, resets on preempt','vllm/v1/request.py:149'],
+  ['num_tokens_with_spec','"tokens, with spec on"','optimistic length IF all drafts accepted = num_tokens + len(spec_token_ids)','vllm/v1/request.py:253'],
+  ['num_output_placeholders','output buffer size','async-only count of promised-but-unmaterialized output tokens','vllm/v1/request.py:141'],
+  ['persistent batch / InputBatch','a batch','CPU buffers reused across steps to avoid tensor rebuilds','vllm/v1/worker/gpu_input_batch.py:91'],
+  ['condense','compress data','<b>compact</b> the dense request prefix after removals (slot swap)','vllm/v1/worker/gpu_input_batch.py:683'],
+  ['GroupCoordinator','a scheduler/leader','a ProcessGroup wrapper (device + cpu groups) per parallel axis','vllm/distributed/parallel_state.py:290'],
+  ['IntermediateTensors','generic tensors','the {hidden_states, residual} dict crossing a PP stage boundary','vllm/sequence.py:12'],
+  ['drafter / proposer','two things','one thing — the speculative draft generator','vllm/v1/spec_decode/llm_base_proposer.py:427'],
+  ['bonus token','a reward','the free target token emitted when ALL drafts are accepted','vllm/v1/sample/rejection_sampler.py:30'],
+  ['rejection sampling (greedy)','probabilistic accept/reject','<b>deterministic argmax match</b> — weight-agnostic; "rejection sampling" only literally applies to the non-greedy path','vllm/v1/sample/rejection_sampler.py:708'],
+  ['PLACEHOLDER_TOKEN_ID / -1','a real token','a sentinel for rejected/padded positions; OOB if it reaches an embedding lookup (break #2)','vllm/v1/sample/rejection_sampler.py:30'],
+  ['uniproc / multiproc executor','thread pools','in-process worker vs one OS process per rank (ZMQ/MQ)','vllm/v1/executor/multiproc_executor.py:103'],
+  ['V1 vs V2 runner','versions of vLLM','two model-runner impls; V2 reduces PP bubbles but is gated to non-MoE/non-quantized whitelisted archs (not our Qwen3.5)','vllm/config/vllm.py:497'],
+  ['EP / EPLB','"everything parallel"','MoE expert parallel (all-to-all); EPLB = a separate group for load-balancing collectives','vllm/distributed/parallel_state.py:1289'],
+  ['PCP / DCP','one "context parallel"','prefill vs decode context (sequence) parallel; DCP reuses TP GPUs (dcp_size ≤ tp_size)','vllm/distributed/parallel_state.py:1313'],
+  ['post_step','a generic hook','the SYNC spec draft-token pull; a no-op under async','vllm/v1/engine/core.py:474'],
+  ['ModelRunnerOutput','includes draft tokens','has NO spec_token_ids — drafts travel via a separate DraftTokenIds','vllm/v1/outputs.py:234'],
+];
+const gbody=document.getElementById('glossbody');
+GLOSS.forEach(([term,assume,real,fl])=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td class="gterm">${term}</td>
+    <td class="gassume">≠ ${assume}</td>
+    <td class="greal">${real}<br>${chip(fl,fl.split('/').slice(-1)[0])}</td>`;
+  tr.dataset.s=(term+' '+assume+' '+real+' '+fl).toLowerCase();
+  gbody.appendChild(tr);
+});
+linkify(gbody);
+document.getElementById('search').addEventListener('input',e=>{
+  const q=e.target.value.toLowerCase().trim();
+  gbody.querySelectorAll('tr').forEach(tr=>{
+    tr.classList.toggle('ghide', q && !tr.dataset.s.includes(q));
+  });
+});
+
+/* ---------------- WEAK SPOTS ---------------- */
+const WEAK=[
+  {id:'W1',sev:'high',t:'gpu_model_runner.py god object (~7,583 lines)',
+   d:'Forward, attention, sampling, spec, PP, multimodal, pooling, cudagraphs, profiling in one class with tangled is_last_rank / is_ngram_gpu / use_async_spec_decode branches.',
+   clean:'Extract SpecDecodeFlow / SamplingFlow / PPTransport collaborators behind typed interfaces; runner orchestrates, doesn\'t implement.',
+   up:'partial — V2 runner (#42187), unavailable to our quantized hybrid',
+   fl:'vllm/v1/worker/gpu_model_runner.py:422'},
+  {id:'W2',sev:'high',t:'No owner for the request state machine',
+   d:'request.status = … and the token counters are mutated from many scheduler sites; the FSM is implicit and fragile (e.g. no assert num_rejected ≤ num_computed_tokens).',
+   clean:'A RequestState owner with guarded transitions + a single accounting method; assert invariants.',
+   up:'no', fl:'vllm/v1/core/sched/scheduler.py:1446'},
+  {id:'W3',sev:'high',t:'-1 magic placeholders + optimistic extend/correct (break #2)',
+   d:'-1 is emitted by both the scheduler and the runner, backfilled only on the common path → leaks on non-common/re-added requests → embed OOB.',
+   clean:'A typed SampledTokenGrid + "emit -1 only when fillable" (req ∈ prev_step_scheduled_req_ids).',
+   up:'YES — PR #40768 (fixes #37159); our B1a is the complementary worker-side half',
+   fl:'vllm/v1/core/sched/async_scheduler.py:31'},
+  {id:'W4',sev:'high',t:'Dual sync/async draft-token paths, no shared abstraction',
+   d:'Sync pulls via post_step→take_draft_token_ids; async injects in the worker. Sync DEADLOCKS for MTP+PP; async CRASHES.',
+   clean:'One DraftTokenChannel abstraction with two backends behind a typed contract (brick 81 C2).',
+   up:'partial (#39704 sync, #40768 async)', fl:'vllm/v1/engine/core.py:474'},
+  {id:'W5',sev:'med',t:'is_ngram_gpu-gated accounting left MTP behind',
+   d:'num_tokens_no_spec advance/correction is gated to ngram_gpu; hybrid MTP uses _update_states_after_model_execute. The two don\'t compose → inconsistent MTP accounting (Q17).',
+   clean:'Method-agnostic accepted-count accounting; resolve the ngram/hybrid asymmetry holistically (our C4).',
+   up:'no', fl:'vllm/v1/worker/gpu_model_runner.py:1502'},
+  {id:'W6',sev:'med',t:'prev_req_id_to_index rebuilt after condense()',
+   d:'The persistent batch is reordered, then the prev-step index map is rebuilt — a stale-mapping risk under the k-step pipeline delay.',
+   clean:'condense() returns the index remap; consumers use it, no post-hoc reconstruction.',
+   up:'no', fl:'vllm/v1/worker/gpu_input_batch.py:683'},
+  {id:'W7',sev:'low',t:'deque(maxlen=…) silently drops on overflow',
+   d:'The batch_queue relies on the pop-before-append invariant; a change that appends without popping would silently drop a future and stall the pipeline with no error.',
+   clean:'A bounded queue that raises on overflow, or an explicit assert at append.',
+   up:'no', fl:'vllm/v1/engine/core.py:192'},
+  {id:'W8',sev:'low',t:'No spec broadcast helper in the coordinator',
+   d:'The sampled-token broadcast is hand-rolled in the runner (now extracted to pp_spec_broadcast.py), separate from GroupCoordinator — PP spec transport lives outside the distributed abstraction.',
+   clean:'Keep the CUDA-free helper (good for gloo tests) but register it as a coordinator method so the contract is discoverable.',
+   up:'our B1a (done)', fl:'vllm/v1/worker/pp_spec_broadcast.py:32'},
+  {id:'W9',sev:'low',t:'IntermediateTensors is an untyped dict[str, Tensor]',
+   d:'PP stages must agree on keys (hidden_states/residual) by convention; a mismatch is a runtime KeyError.',
+   clean:'A frozen dataclass with typed fields.',
+   up:'no', fl:'vllm/sequence.py:12'},
+  {id:'W10',sev:'low',t:'array_like msgspec structs make field order the wire contract',
+   d:'Adding/reordering a field on EngineCoreRequest/EngineCoreOutputs silently breaks cross-version compatibility.',
+   clean:'Versioned schema or named (map) encoding for evolution-critical structs.',
+   up:'no', fl:'vllm/v1/engine/__init__.py:83'},
+];
+const sevName={high:'HIGH',med:'MED',low:'LOW'};
+const sevbar=document.getElementById('sevbar');
+['all','high','med','low'].forEach((s,i)=>{
+  const b=document.createElement('button'); b.textContent=s==='all'?'all':sevName[s]; if(i===0)b.classList.add('on');
+  b.onclick=()=>{document.querySelectorAll('#sevbar button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    document.querySelectorAll('#weakcards .card').forEach(c=>{c.style.display=(s==='all'||c.dataset.sev===s)?'':'none';});};
+  sevbar.appendChild(b);
+});
+const wc=document.getElementById('weakcards');
+WEAK.forEach(w=>{
+  const c=document.createElement('div'); c.className='card'; c.dataset.sev=w.sev;
+  c.innerHTML=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span class="pill sev-${w.sev}">${w.id} · ${sevName[w.sev]}</span>
+      <span style="font-weight:600">${w.t}</span></div>
+    <div style="font-size:13.5px;margin-bottom:6px">${w.d}</div>
+    <div style="font-size:13px;color:var(--muted)"><b style="color:var(--accent2)">clean design:</b> ${w.clean}</div>
+    <div style="font-size:12.5px;margin-top:6px"><b class="muted">upstream:</b> ${w.up} &nbsp; ${chip(w.fl,w.fl.split('/').slice(-1)[0])}</div>`;
+  wc.appendChild(c);
+});
+linkify(wc);
+</script>
+</body>
+</html>

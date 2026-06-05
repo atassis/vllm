@@ -12,8 +12,6 @@ logger = init_logger(__name__)
 class AsyncScheduler(Scheduler):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # reusable read-only placeholder list for speculative decoding.
-        self._spec_token_placeholders: list[int] = [-1] * self.num_spec_tokens
         self.pp_size = self.parallel_config.pipeline_parallel_size
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
@@ -31,9 +29,15 @@ class AsyncScheduler(Scheduler):
             # in this scheduling step.
             cur_num_spec_tokens = len(spec_decode_tokens.get(req_id, ()))
             request.num_output_placeholders += 1 + cur_num_spec_tokens
-            # Add placeholders for the new draft/spec tokens.
-            # We will update the actual spec token ids in the worker process.
-            request.spec_token_ids = self._spec_token_placeholders
+            # Record async placeholder INTENT (count), not a -1 token list. The
+            # next step materializes -1 tokens (in _consume_spec_decode_tokens_
+            # for_step) ONLY if this request is in the previous worker batch, so
+            # the worker fills them before the embedding lookup. Emitting -1s for
+            # re-added / non-prev-step requests is what leaked into input_ids.
+            if self.num_spec_tokens > 0:
+                request.num_pending_async_spec_placeholders = self.num_spec_tokens
+            else:
+                request.num_pending_async_spec_placeholders = 0
 
             if self.use_v2_model_runner:
                 # Set the next step index in which this request is eligible to be

@@ -8,7 +8,7 @@ import pytest
 from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import RequestStatus
+from vllm.v1.request import Request, RequestStatus
 from vllm.v1.utils import ConstantList
 
 from .utils import create_requests, create_scheduler
@@ -320,3 +320,119 @@ def test_abort_request_when_structured_output_fsm_cannot_advance():
     assert request.status == RequestStatus.FINISHED_ERROR
     assert request.request_id not in scheduler.requests
     assert not scheduler.running
+
+
+# --- #40768-style tests: async spec placeholder discipline (break #2 fix) ---
+# These pin that `-1` spec placeholders are emitted ONLY when the request was in
+# the previous worker batch (so the worker-side overwrite will fill them); for
+# re-added / non-prev-step requests no `-1` is scheduled, so none can leak into
+# input_ids and trigger the embedding OOB (brick 80, Q16).
+
+
+def _make_request_ready_for_spec_decode(
+    scheduler: AsyncScheduler,
+    *,
+    num_computed_tokens: int = 2,
+    num_output_placeholders: int = 1,
+) -> tuple[str, Request]:
+    """Create a request whose next schedule step can include spec tokens."""
+    (request,) = create_requests(num_requests=1, num_tokens=1)
+    scheduler.requests[request.request_id] = request
+    request.num_computed_tokens = num_computed_tokens
+    request.num_output_placeholders = num_output_placeholders
+    return request.request_id, request
+
+
+def test_consume_async_spec_placeholders_requires_prev_step_membership():
+    """Stale async placeholders must be dropped when previous slot is absent."""
+    scheduler = create_scheduler(async_scheduling=True, num_speculative_tokens=2)
+    req_id, request = _make_request_ready_for_spec_decode(scheduler)
+    request.num_pending_async_spec_placeholders = 2
+    scheduler.prev_step_scheduled_req_ids.clear()
+
+    spec_token_ids = scheduler._consume_spec_decode_tokens_for_step(
+        request, num_new_tokens=1
+    )
+
+    assert spec_token_ids is None
+    assert req_id not in scheduler.prev_step_scheduled_req_ids
+    assert request.num_pending_async_spec_placeholders == 0
+
+
+def test_consume_async_spec_placeholders_materializes_for_prev_step_member():
+    """Async placeholders should still flow when previous worker slot exists."""
+    scheduler = create_scheduler(async_scheduling=True, num_speculative_tokens=2)
+    req_id, request = _make_request_ready_for_spec_decode(scheduler)
+    request.num_pending_async_spec_placeholders = 2
+    scheduler.prev_step_scheduled_req_ids = {req_id}
+
+    spec_token_ids = scheduler._consume_spec_decode_tokens_for_step(
+        request, num_new_tokens=1
+    )
+
+    # This step can consume only one spec token:
+    # 1 (new) + 2 (computed) - 1 (prompt) - 1 (placeholder) = 1.
+    assert spec_token_ids == [-1]
+    assert request.num_pending_async_spec_placeholders == 0
+
+
+def test_consume_async_spec_prefers_real_spec_tokens_over_placeholders():
+    """Real draft token IDs must not be blocked by async placeholder gating."""
+    scheduler = create_scheduler(async_scheduling=True, num_speculative_tokens=2)
+    _, request = _make_request_ready_for_spec_decode(
+        scheduler, num_computed_tokens=3, num_output_placeholders=1
+    )
+    request.spec_token_ids = [11, 12]
+    request.num_pending_async_spec_placeholders = 2
+    scheduler.prev_step_scheduled_req_ids.clear()
+
+    spec_token_ids = scheduler._consume_spec_decode_tokens_for_step(
+        request, num_new_tokens=1
+    )
+
+    assert spec_token_ids == [11, 12]
+    assert request.num_pending_async_spec_placeholders == 0
+
+
+def test_consume_async_spec_clears_pending_when_no_spec_budget():
+    """Pending async placeholder intent should not leak across zero-budget steps."""
+    scheduler = create_scheduler(async_scheduling=True, num_speculative_tokens=2)
+    req_id, request = _make_request_ready_for_spec_decode(
+        scheduler, num_computed_tokens=1, num_output_placeholders=1
+    )
+    request.num_pending_async_spec_placeholders = 2
+    scheduler.prev_step_scheduled_req_ids = {req_id}
+
+    spec_token_ids = scheduler._consume_spec_decode_tokens_for_step(
+        request, num_new_tokens=1
+    )
+
+    assert spec_token_ids is None
+    assert request.num_pending_async_spec_placeholders == 0
+
+
+def test_schedule_reserves_budget_for_async_spec_placeholders():
+    """Async placeholder intent should count toward the next step's budget."""
+    scheduler = create_scheduler(
+        async_scheduling=True,
+        enable_chunked_prefill=False,
+        num_speculative_tokens=2,
+    )
+    (request,) = create_requests(num_requests=1, num_tokens=1)
+    scheduler.add_request(request)
+
+    first_output = scheduler.schedule()
+
+    assert first_output.num_scheduled_tokens[request.request_id] == 1
+    assert request.num_pending_async_spec_placeholders == 2
+
+    second_output = scheduler.schedule()
+
+    assert second_output.num_scheduled_tokens[request.request_id] == 3
+    assert second_output.scheduled_spec_decode_tokens[request.request_id] == [-1, -1]
+    # NOTE: on current main `_update_after_schedule` runs at the END of
+    # `schedule()` (scheduler.py:943), so it immediately RE-reserves the intent
+    # for the next step after `_consume_spec_decode_tokens_for_step` cleared it.
+    # (#40768's base called it at schedule-start → expected 0 here.) The
+    # consume-clears-pending contract itself is covered by the 4 unit tests above.
+    assert request.num_pending_async_spec_placeholders == 2
