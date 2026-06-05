@@ -929,3 +929,25 @@ the 1.88× RATIO is the honest metric; MiMo's no-offload 22.8 tok/s is the clean
 point of the s9 fixes lands: **correctness (greedy-equiv) AND ~1.8× throughput together**, on both
 a pure-attention and a hybrid-GDN model, under PP=2+MTP. (Single-GPU vs PP head-to-head left as a
 follow-up — single-GPU 27B needs heavy offload so its absolute tok/s isn't comparable to PP=2.)
+
+### s9 num_speculative_tokens sweep — fix GENERALIZES past k=1; k=2 is the sweet spot
+
+Stakeholder asked whether the MTP can draft 3–4 tokens (num_speculative_tokens>1). Qwen3.5
+MTP has 1 layer (`mtp_num_hidden_layers=1`) so multi-token drafting is AUTOREGRESSIVE (the
+single head re-run k times on its own output). Swept k=1,2,3 on MiMo PP=2 (no offload, 120 tok):
+
+| k | spec tok/s | mean accept length | greedy-equiv vs baseline |
+|--:|----------:|------------------:|---|
+| 1 | 38.7 | 1.81 | 4/5 (lone near-tie @109) |
+| 2 | **39.3** | 1.99 | 4/5 (same @109) |
+| 3 | 36.6 | 1.99 | 4/5 (same @109) |
+
+**Two findings:** (1) **greedy-equiv holds for k=2 AND k=3 — the s9 PP+spec fixes GENERALIZE
+past k=1.** All k diverge from baseline at the SAME single point (@109, k-independent) = the
+near-tie floor, not a k-dependent bug. This validates the width-agnostic broadcast (B1a) +
+num_computed_tokens drift + num_accepted_tokens corrections across the full valid-count range
+1..k+1 (the drift helper was already unit-tested on partial-accept e.g. (3,2)->2). (2) **k=2 is
+the sweet spot; k=3 hurts.** Mean acceptance length saturates ~2 (the autoregressive MTP
+reliably lands ~1 extra token but rarely a 2nd/3rd), so deeper drafts add draft-forward overhead
+without acceptance gain. => for this model/workload, num_speculative_tokens=1–2 is optimal; the
+fix itself is k-agnostic.
