@@ -37,7 +37,20 @@ inline in an ssh string (kills the ssh shell, exit 255).
 
 | 2026-06-05 (s8-draftbc) | MiMo-7B PP=2 + MTP async | **draft-token broadcast iter 1** (last rank broadcasts _draft_token_ids paired w/ sampled bcast; non-last receives into _draft_token_ids so the scatter places real drafts) | `exit=0`, NO deadlock; **greedy-equiv divergence moved tok2 -> tok3** (seq0 now `[12095,13,1084,...]`, tok2=1084 matches baseline; was 315) | **Draft-broadcast WORKS + collective placement OK (no deadlock).** Fixed the FIRST verification; residual: new spec output = old wrong trajectory with the correct 1084 inserted, then old wrong tokens (576,6722,...) -> later steps still use a MISALIGNED draft (step-offset: the draft received doesn't match the step it's scattered into). NEXT: re-run w/ PPDBG draft-trajectory (send draft vs recv draft vs scatter-used per step) to pin the offset. |
 
+| 2026-06-05 (s8-drafttraj) | MiMo PP=2 + MTP async, PPDBG draftscatter probe | draft-broadcast iter1 + trajectory | draftscatter IDENTICAL on both ranks every step; **drafts are CORRECT (match baseline tokens) but REJECTED** | **Not a draft offset — draft-broadcast is correct/complete.** The drafts (13,374,3283...) match baseline but the target REJECTS them -> target verification logits wrong under PP. First divergence right AFTER the first multi-token accept (send [13,1084], v=2). Pinned the cause: the prev_sampled GPU overlay (`_prepare_input_ids` :1794/:1808) feeds `prev_sampled_token_ids[:,0]` = the FIRST accepted draft, not the latest committed token. |
+| 2026-06-05 (s8-overlayfix) | MiMo PP=2 + MTP async | + overlay uses select_latest (not col 0) | `exit=0`; **greedy-equiv divergence pushed FAR later** (seq0 tok3->tok8 — first 8 now == baseline; seq2 tok2->tok25; seq1@6, seq3@5, seq4@3) | **Overlay-latest fix CONFIRMED (big win).** Mirrors C4 on the GPU/common path. But greedy-equiv still not fully closed — a residual PP-spec divergence remains (varies per seq; single-GPU was 4/5 perfect, so PP still has >=1 more issue). Clean compare (both PP=2 no-offload). NEXT diagnostic. |
+
 ## Next planned run
+**Greedy-equiv residual (after draft-broadcast + overlay-latest).** Three fixes landed
+(draft-broadcast, overlay-latest, + earlier C4/width-pad) pushed divergence from tok2-everywhere to
+tok3-25, but it's not fully closed (seq4 still @tok3, seq0 @tok8, seq2 @tok25). single-GPU MTP was
+4/5 perfect, so >=1 PP-spec residual remains. NEXT: pin the first per-seq divergence — instrument the
+non-last rank's FULL post-overlay GPU input_ids + positions at the failing step and compare to a
+baseline-run probe; suspects = spec-position rope/positions, attention seq_lens, or accepted-draft KV
+after multi-accept. (Some tail divergences may be the tok29-class near-tie edge single-GPU also shows.)
+Strip ALL PPDBG probes + run_mimo_dbg/v2/sg.sh before PR.
+
+--- superseded ---
 **Draft-broadcast iter 2 — fix the step-offset (greedy-equiv).** iter 1 broadcasts the draft and
 fixes the first verification (tok2 now correct) but later steps diverge -> the draft used by the
 non-last rank's scatter is misaligned by a step for non-first decodes. Re-run with a PPDBG draft
