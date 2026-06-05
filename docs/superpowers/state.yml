@@ -7,6 +7,19 @@
 updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
 
 next_action: >
+  GREEDY-EQUIV CLOSED (s9) — MiMo PP=2+MTP DONE. Fix 8105121a9 verified on gpu-wb: 40 tok 5/5
+  token-identical to baseline (deterministic x2), 1.75x faster (39.66 vs 22.70 tok/s), 200-tok
+  residual = near-tie floor (PP-spec 2/5 diverge <= single-GPU 3/5; one divergence bit-exact shared
+  with single-GPU). break#2 (s8) + greedy-equiv (s9) both closed; 129 local green, ruff clean.
+  NEXT, in order: (1) CLEANUP — strip ALL PPDBG probes (gpu_model_runner.py read/recv/discard/send/
+  draftscatter + gpu_input_batch.py spectok) + throwaway run scripts (run_mimo_dbg/v2/sg/perf.sh) +
+  revert e3_run.py ignore_eos/warmup/timing (or guard behind env); re-run MiMo to confirm output
+  unchanged after probe removal. (2) 27B greedy-equiv vs base.json (the original oracle) + A1c memory
+  knobs. (3) [[CMP]] north-star benchmark (PP=2 vs single-GPU, tokens/s + acceptance + quality). (4)
+  PR SERIES (small, bug-by-bug, with rationale): A1c -> B1a -> C3(#40768-aligned) -> C4(break#2) ->
+  s9(num_computed_tokens drift). Each needs the brick-81 invariant framing (advance num_computed_tokens
+  by valid count, identically per rank) — the seed of the typed spec-decode-accounting contribution.
+  --- (s9 root-cause history below) ---
   GREEDY-EQUIV — FIRST DIVERGENCE ROOT-CAUSED (s9), FIX DESIGNED, IMPLEMENT NEXT. Reproduced
   (run_mimo_dbg spec, no-offload): per-seq first divergence seq4@out3, seq3@5, seq1@6, seq0@8,
   seq2@25 (deterministic, == s8). Dissected seq4@out3 via PPDBG trajectory (max_num_seqs=1 → clean
@@ -103,11 +116,11 @@ deliverables:
 
   - id: C4
     title: Holistic NON-last-rank input reconstruction - back-write the real broadcast value into token_ids_cpu (never -1), modeled on the V2 PPHandler blueprint
-    status: in_progress     # break#2 CLOSED (s8: A+B+width-pad, runs e2e exit=0); greedy-equiv fails but is a SEPARATE verification-correctness layer (output invariant to non-last fixes)
-    verify: "unit: pytest tests/v1/spec_decode/test_pp_spec_broadcast.py -q (10 green incl. gather_valid x4). INTEGRATION oracle: MiMo PP=2+MTP async on gpu-wb -> break#2 gone + generate completes + greedy-equiv -> 27B vs base.json"
-    last_result: "break#2 CLOSED (s8). (A) gather_valid_sampled_tokens_per_req helper + receiver writes recv[i,0:v] at token_ids_cpu[ntns:ntns+v], advance ntns by v. (B) receiver trims output_token_ids by the prev_num_draft_len optimistic-extend(:1319) placeholders then extends recv[i,0:v] -> num_tokens stops inflating -> discard_request_mask(:2045) no longer mis-fires. RESULT: MiMo PP=2+MTP async runs END-TO-END, exit=0, 5x40 tok (first ever); discard=False every step. BUT GREEDY-EQUIV FAILS: spec output diverges from mimo_base.json at ~token 2 (seq0 base[12095,13,1084] vs spec[12095,13,315]). Lead: recv[s1]col1=0 written at pos6 where true 2nd committed token=13 -> bad target context -> draft 315 wrongly accepted (out[2], base=1084). Grid-content/step-alignment of sampler_output.sampled_token_ids is the next gate. Local: 24 green, ruff clean. UPDATE: sender width-pad added (send s0 is width-1 -> receiver read uninit garbage; pad to num_spec+1 with -1) - fixed that real bug (recv s1 now [12095,-1]) BUT output BYTE-INVARIANT to it and to all non-last fixes -> greedy-equiv divergence is a SEPARATE pre-existing MTP+PP verification bug, not the reconstruction. Baseline x3 deterministic (oracle valid)."
+    status: done     # s9: break#2 (s8) + greedy-equiv (s9) BOTH closed. MiMo PP=2+MTP runs e2e + greedy-equiv to baseline (up to near-tie floor) + 1.75x faster.
+    verify: "unit: pytest tests/v1/spec_decode/test_pp_spec_broadcast.py tests/v1/core/test_async_scheduler.py -q (129 green w/ scheduler; drift_correction x4). INTEGRATION oracle: MiMo PP=2+MTP async gpu-wb -> 40 tok 5/5 == mimo_base.json; 200 tok PP-spec 2/5 near-tie divergence (<= single-GPU's 3/5) -> 27B vs base.json next"
+    last_result: "GREEDY-EQUIV CLOSED (s9, fix 8105121a9). Root cause: async spec advances num_computed_tokens optimistically and corrects via the GPU kernel update_num_computed_tokens_for_batch_change (:2138) gated on valid_sampled_token_count_gpu = sampler/LAST-rank only; non-last rank skipped it -> positions over-advanced by rejected-draft count after each rejection -> rope off-by-one -> non-greedy. FIX: receiver stashes per-req broadcast valid count; _update_states subtracts the drift (num_computed_tokens_drift_correction helper, 4 tests) on non-last rank BEFORE the optimistic value is stored, so the else-branch CPU->GPU copy feeds self.positions correct rope. (Receiver placement failed: :1408 overwrites it; _update_states is the right site.) VERIFIED gpu-wb MiMo PP=2+MTP async no-offload: 40 tok 5/5 token-identical to mimo_base.json deterministic x2 (pre-fix all 5 diverged tok 3-8). SPEED clean run 200 tok: baseline 22.70 vs spec 39.66 tok/s = 1.75x. LONGER 200 tok 3-way: PP-spec 2/5 diverge, single-GPU-spec 3/5 diverge -> residual = NEAR-TIE FLOOR not PP bug (seq1@176 PP==SG bit-exact shared near-tie; seq0 PP perfect where SG diverges). Local 129 green, ruff clean."
     last_verified: 2026-06-05
-    pr: "-"
+    pr: "ready to cut (series): A1c + B1a + C3(=#40768-aligned) + C4(break#2) + s9(drift). Strip PPDBG probes + throwaway run scripts first."
     pointer: research/pp-mtp/40-pp-x-spec-decode.md  # sections: F2/C4 + Session 7 (V2 blueprint)
 
   - id: ALT

@@ -794,3 +794,54 @@ structural accounting arm. → reinforces the brick-81 thesis: the highest-value
 contribution is an explicit, typed, tested **spec-decode token-accounting state
 machine** (one invariant: "advance by valid count, identically per rank") — not a
 pipeline rewrite. See `81-typing-and-rewrite-contribution.md` + the s9 strategy note.
+
+### s9 FIX VERIFIED — MiMo PP=2+MTP greedy-equiv + 1.75x speedup; residual = near-tie floor
+
+**Fix** (`8105121a9`): receiver stashes the per-req broadcast valid count
+(`_pp_prev_valid_sampled_count`); `_update_states` subtracts the rejected-draft drift
+from the optimistic `num_computed_tokens` (`num_computed_tokens_drift_correction`,
+4 unit tests) on the non-last rank only — BEFORE the value is stored (`:1347/:1408`)
+so the else-branch CPU→GPU copy (`:2147`) feeds `self.positions` (`:2160`) the right
+rope/KV positions. (First placement in the receiver FAILED: it runs in `sample_tokens`
+and `:1408` overwrites it — the probe showed nct unchanged. Moving to `_update_states`
+fixed the timing.)
+
+**Verification (gpu-wb, MiMo-7B PP=2+MTP async, no-offload):**
+- **40 tokens × 5 seqs: 5/5 token-identical to `mimo_base.json`, deterministic ×2.**
+  (Pre-fix: all 5 diverged at tok 3–8.)
+- Local: 129 green (async_scheduler + pp_spec_broadcast + scheduler), ruff clean.
+
+**Speed (clean run, NO CUDA_LAUNCH_BLOCKING / NO PPDBG, 200 tok × 5, max_num_seqs=1,
+enforce_eager, ignore_eos):** baseline 22.70 tok/s vs **spec 39.66 tok/s = 1.75×**.
+Correctness AND speedup together — first time for this combo.
+
+**Longer chains (200 tok) — three-way base / PP-spec / single-GPU-spec (sg, cpu_offload):**
+
+| seq | PP-spec vs base | SG-spec vs base | PP vs SG |
+|----:|:---------------:|:---------------:|:--------:|
+| 0 | identical | @25 | @25 |
+| 1 | @176 | @176 | **identical** |
+| 2 | identical | identical | identical |
+| 3 | identical | identical | identical |
+| 4 | @109 | @161 | @109 |
+
+**Divergence-from-baseline tally @200: PP-spec 2/5, single-GPU-spec 3/5** → PP is *at
+least as* greedy-equivalent as the established single-GPU MTP reference. The residual is
+the **near-tie floor**, NOT a PP bug, proven by: (a) seq1@176 is bit-exact identical
+between PP and SG (a shared fp near-tie: base "scatters more *than*" vs both spec "more*.
+So*"); (b) single-GPU MTP itself diverges (more often); (c) seq0 PP is PERFECT while SG
+diverges @25 (base/PP "Madrid is a very popular" vs SG "The city is located" — PP *more*
+correct). A systematic accounting bug diverges EARLY on ALL seqs (as the s9 bug did at
+tok 3–8); this is sporadic, late, fp-sensitive, and sometimes favors PP → near-tie noise.
+This is exactly the "tok29-class edge" the KB anticipated. Spec decode is greedy-equiv
+*up to fp near-ties* by nature (2-token vs 1-token forward → different reduction order →
+argmax flips at ties); vLLM's own spec tests tolerate this.
+
+**NET s9: C4 greedy-equiv CLOSED.** MiMo PP=2+MTP async now: runs e2e (break#2, s8) +
+greedy-equiv to no-spec baseline up to the near-tie floor (s9) + 1.75× faster. The
+systematic non-last-rank position bug is root-caused and fixed with one invariant
+(advance `num_computed_tokens` by the valid count, identically per rank). Next: strip
+PPDBG probes + throwaway run scripts, then 27B greedy-equiv (vs base.json) and the
+[[CMP]] benchmark, and cut the upstream PR series. **NOTE for PR:** `e3_run.py` now has
+`ignore_eos=True` (was False) + warmup + timing — revert/guard before PR; perf scripts
+(run_mimo_perf.sh / run_sg_spec.sh) are throwaway.
