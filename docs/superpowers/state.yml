@@ -7,6 +7,17 @@
 updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
 
 next_action: >
+  DRAFT-BROADCAST iter 2 = fix the step-offset (the last greedy-equiv gap). iter 1 (committed
+  60bedcdb3): last rank broadcasts _draft_token_ids paired w/ sampled bcast; non-last receives into
+  _draft_token_ids so _prepare_input_ids scatter (:1814) places real drafts. NO DEADLOCK; divergence
+  moved tok2->tok3 (first verification now correct, tok2=1084=baseline). RESIDUAL: later decode steps
+  scatter a MISALIGNED draft (step-offset: the draft the non-last rank applies != the step it belongs
+  to). NEXT: PPDBG draft trajectory (last: broadcast draft+step; non-last: received draft + which
+  _prepare_input_ids step scatters it + prev_req_id_to_index) -> pin whether non-last applies step-N
+  draft at step N vs N±1, and whether prev-batch row indexing matches. Oracle: PP=2 spec ==
+  base_a.json (modulo tok29-class edge), then 27B vs base.json. Strip all PPDBG probes +
+  run_mimo_dbg/v2/sg.sh before PR.
+  --- (history below: greedy-equiv was scoped to VERIFICATION layer; break#2 CLOSED via A+B+width-pad) ---
   C4 GREEDY-EQUIVALENCE, now scoped to a DISTINCT layer: VERIFICATION correctness (NOT my input
   reconstruction). State after s8: break#2 CLOSED (A value-backfill + B output_token_ids trim + sender
   width-pad), MiMo PP=2+MTP async RUNS end-to-end (exit=0). Oracle confirmed deterministic (baseline

@@ -35,7 +35,19 @@ inline in an ssh string (kills the ssh shell, exit 255).
 
 | 2026-06-05 (s8-upstream) | **PURE UPSTREAM** main (merge-base 68f5e565c, fresh worktree, our foundation REMOVED) | MiMo MTP+PP=2 async | **[FAIL@LOAD] `NotImplementedError: Pipeline parallelism is not supported for this model. Supported models implement the SupportsPP interface.`** | **Answers "does upstream silently corrupt prod?": NO.** Upstream HARD-BLOCKS MTP+PP at load (model.py:1200 is_pp_supported_model gate) — not a crash, not silent garbage. Our foundation (b93190138 config-decouple + SupportsPP on Qwen3.5MTP + draft_pp wiring) is what LIFTS the gate and makes MTP+PP runnable; break#2 + the draft-broadcast gap are bugs we EXPOSE by opening the path, latent-but-unreachable on upstream. So MTP+PP is an UNSUPPORTED combo we're enabling, not a silently-broken shipped feature. (Remote restored to our tree after; worktree removed.) |
 
+| 2026-06-05 (s8-draftbc) | MiMo-7B PP=2 + MTP async | **draft-token broadcast iter 1** (last rank broadcasts _draft_token_ids paired w/ sampled bcast; non-last receives into _draft_token_ids so the scatter places real drafts) | `exit=0`, NO deadlock; **greedy-equiv divergence moved tok2 -> tok3** (seq0 now `[12095,13,1084,...]`, tok2=1084 matches baseline; was 315) | **Draft-broadcast WORKS + collective placement OK (no deadlock).** Fixed the FIRST verification; residual: new spec output = old wrong trajectory with the correct 1084 inserted, then old wrong tokens (576,6722,...) -> later steps still use a MISALIGNED draft (step-offset: the draft received doesn't match the step it's scattered into). NEXT: re-run w/ PPDBG draft-trajectory (send draft vs recv draft vs scatter-used per step) to pin the offset. |
+
 ## Next planned run
+**Draft-broadcast iter 2 — fix the step-offset (greedy-equiv).** iter 1 broadcasts the draft and
+fixes the first verification (tok2 now correct) but later steps diverge -> the draft used by the
+non-last rank's scatter is misaligned by a step for non-first decodes. Re-run with a PPDBG draft
+trajectory: log on the last rank the broadcast `_draft_token_ids` + step, and on the non-last rank
+the received draft + which step's `_prepare_input_ids` scatters it + `prev_req_id_to_index`. Pin
+whether the non-last rank applies step-N's draft at step N (correct) or N±1 (offset), and whether the
+prev-batch indexing matches. Oracle: PP=2 spec == base_a.json (modulo tok29-class edge). Then 27B vs
+base.json. Strip ALL PPDBG probes + run_mimo_dbg/v2/sg.sh before PR.
+
+--- superseded ---
 **Draft-token broadcast to non-last ranks (the greedy-equiv fix; a NEW piece, analogous to B1a).**
 ROOT CAUSE fully pinned (s8-spectok): the non-last rank embeds the `-1` spec placeholder because the
 real draft (`_draft_token_ids`) exists only on the last rank (drafter gated `:547`); the GPU
