@@ -845,3 +845,33 @@ PPDBG probes + throwaway run scripts, then 27B greedy-equiv (vs base.json) and t
 [[CMP]] benchmark, and cut the upstream PR series. **NOTE for PR:** `e3_run.py` now has
 `ignore_eos=True` (was False) + warmup + timing — revert/guard before PR; perf scripts
 (run_mimo_perf.sh / run_sg_spec.sh) are throwaway.
+
+### s9 27B — greedy-equiv FAILS, but it's a DISTINCT (hybrid-GDN) bug, NOT the s9 position fix
+
+Ran Qwen3.5-27B-AWQ PP=2 baseline vs spec with the SAME memory config (cpu_offload_gb=3),
+only diff = spec on/off + int4 draft embed (A1c). **Speed: baseline 1.83 vs spec 3.33
+tok/s = 1.82× (even offload-bound + int4 draft).** But **greedy-equiv FAILS**: all 5 seqs
+diverge EARLY (seq4@3, seq0@5, seq1@6, seq3@6, seq2@16) — the systematic-bug signature
+(early + all seqs), unlike MiMo (5/5 exact). Spec is coherent but systematically drops
+content: e.g. seq4 baseline "\nA. <content>\nB. <content>…" vs spec "\nA.\nB.\nC.…"
+(markers only, content token replaced by newline 198).
+
+**Discriminator run (int8 draft, QUANT_BITS=8):** int4-spec and int8-spec diverge from
+baseline at the EXACT SAME positions (and are ~identical to each other) → **the draft
+quant precision is RULED OUT.** Expected: in MTP the target verifies by embedding the
+draft with its OWN (AWQ) embedding, so the int4/int8 draft embed cannot affect target
+verification; draft quality only affects acceptance.
+
+**=> The 27B residual is ARCHITECTURAL, not our PP plumbing and not A1c.** Prime suspect =
+**Qwen3.5's hybrid Gated-DeltaNet (GDN) linear-attention layers' recurrent/conv1d STATE**,
+which (unlike full-attention KV) must be SAVED before the draft token and RESTORED on
+rejection. This is exactly the Q14 hybrid-arch concern that MiMo (pure attention) was
+chosen to sidestep. Likely an upstream-general GDN+spec issue (or GDN-state-under-PP),
+DISTINCT from the s9 num_computed_tokens fix (which fully closed pure-attention PP+MTP).
+
+**Decisive next discriminator (slow, deferred to user steer):** single-GPU 27B spec (no
+PP, heavy offload) — if greedy-equiv there, the GDN bug is PP-specific (state not
+rolled-back/synced on the non-last rank); if it ALSO diverges, it's a general GDN+spec bug
+independent of our work. **Scope note:** the shippable contribution is the pure-attention
+PP+MTP plumbing (break#2 + s9 + foundation), proven greedy-equiv + 1.75–1.82× on MiMo and
+27B-speed; the hybrid-GDN-spec correctness is a separate axis/PR.
