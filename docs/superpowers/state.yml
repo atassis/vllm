@@ -7,6 +7,22 @@
 updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
 
 next_action: >
+  GREEDY-EQUIV CLOSED for BOTH pure-attention (MiMo) AND hybrid-GDN (Qwen3.5-27B) PP=2+MTP (s9).
+  Three fixes, one invariant — the non-last PP rank must apply the sampler's broadcast per-req
+  valid/accepted count to: num_computed_tokens (positions/KV, commit 8105121a9) AND
+  num_accepted_tokens (mamba/GDN conv1d+SSM state rollback, commit bd3ad37b8). VERIFIED gpu-wb:
+  MiMo PP=2 5/5==baseline (40tok) + 1.75x; 27B-AWQ PP=2 5/5==base_27b (40tok, cpu_offload=3, int4
+  draft) + 1.82x; single-GPU 27B spec==baseline 5/5 (isolation proved PP-specific); MiMo no
+  regression (GDN fix gated is_hybrid). int4==int8 ruled out draft quant. Caveat: mamba_cache_mode
+  align/all non-last postprocess untested (default "none" verified). NEXT, in order: (1) [[CMP]]
+  benchmark — MiMo + 27B PP=2 spec vs baseline, tokens/s + acceptance + longer-chain quality (27B
+  may show same near-tie floor as MiMo @200, expected). (2) CLEANUP — strip ALL PPDBG probes
+  (gpu_model_runner read/recv/discard/send/draftscatter + gpu_input_batch spectok) + throwaway run
+  scripts (run_mimo_dbg/v2/sg/perf/27b*.sh, run_sg27.sh, run_mimo_check.sh) + revert e3_run.py
+  ignore_eos/warmup/timing (or env-guard); re-run to confirm output unchanged. (3) PR SERIES (small,
+  bug-by-bug, brick-81 invariant framing): A1c -> B1a -> C3(#40768) -> C4(break#2) -> s9-positions ->
+  s9-gdn-state. The whole greedy-equiv class = ONE contribution thesis (typed non-last-rank
+  spec-accounting from the broadcast). --- (prior next-action history below) ---
   GREEDY-EQUIV CLOSED (s9) — MiMo PP=2+MTP DONE. Fix 8105121a9 verified on gpu-wb: 40 tok 5/5
   token-identical to baseline (deterministic x2), 1.75x faster (39.66 vs 22.70 tok/s), 200-tok
   residual = near-tie floor (PP-spec 2/5 diverge <= single-GPU 3/5; one divergence bit-exact shared
