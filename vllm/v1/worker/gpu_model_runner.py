@@ -209,6 +209,7 @@ from vllm.v1.worker.pp_spec_broadcast import (
     broadcast_sampled_token_ids,
     gather_valid_sampled_tokens_per_req,
     receive_sampled_token_ids,
+    select_latest_sampled_token_per_req,
 )
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
@@ -1790,8 +1791,15 @@ class GPUModelRunner(
             # and no reordering happened.
             # The indices are both the same permutation of 0..N-1 so
             # we can copy directly using a single slice.
+            # Use the per-request LATEST valid sampled token, not column 0: with
+            # spec decode prev_sampled_token_ids is [accepted drafts..., bonus],
+            # so after a multi-token accept column 0 is the FIRST accepted draft,
+            # not the latest committed token the next step must continue from.
+            # (Mirrors C4's select_latest on the cpu/non-common path.)
             self.input_ids.gpu[:num_common_tokens].copy_(
-                self.input_batch.prev_sampled_token_ids[:num_common_tokens, 0],
+                select_latest_sampled_token_per_req(
+                    self.input_batch.prev_sampled_token_ids[:num_common_tokens]
+                ),
                 non_blocking=True,
             )
             return
@@ -1802,12 +1810,16 @@ class GPUModelRunner(
         prev_common_req_indices_tensor = torch.tensor(
             prev_indices, dtype=torch.int64, pin_memory=self.pin_memory
         ).to(self.device, non_blocking=True)
+        # Per-request LATEST valid sampled token (not column 0) — see the
+        # common-case branch above; column 0 is the first accepted draft after a
+        # multi-token accept, not the latest committed token.
+        latest_sampled_per_req = select_latest_sampled_token_per_req(
+            self.input_batch.prev_sampled_token_ids
+        )
         self.input_ids.gpu.scatter_(
             dim=0,
             index=sampled_tokens_index_tensor,
-            src=self.input_batch.prev_sampled_token_ids[
-                prev_common_req_indices_tensor, 0
-            ],
+            src=latest_sampled_per_req[prev_common_req_indices_tensor],
         )
 
         # Scatter the draft tokens after the sampled tokens are scattered.
@@ -1825,6 +1837,20 @@ class GPUModelRunner(
         # because input_ids dtype is torch.int32,
         # so convert draft_token_ids to torch.int32 here.
         draft_token_ids = self._draft_token_ids.to(dtype=torch.int32)
+
+        if __import__("os").environ.get("VLLM_PP_SPEC_DEBUG"):  # PPDBG (revert)
+            import sys as _sys
+
+            _st = getattr(self, "_ppdbg_step", 0)
+            _last = get_pp_group().is_last_rank
+            print(
+                f"PPDBG[draftscatter s{_st} last={_last}] "
+                f"draft={draft_token_ids[:num_reqs].tolist()} "
+                f"spec_idx={spec_flattened_indices} "
+                f"prev_draft_idx={prev_draft_token_indices}",
+                file=_sys.stderr,
+                flush=True,
+            )
 
         self.input_ids.gpu.scatter_(
             dim=0,
