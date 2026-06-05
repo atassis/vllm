@@ -63,6 +63,27 @@ def gather_valid_sampled_tokens_per_req(
     return [row[:v] for row, v in zip(rows, counts)]
 
 
+def num_computed_tokens_drift_correction(
+    prev_num_draft_len: int, valid_sampled_count: int
+) -> int:
+    """Amount to subtract from the optimistic ``num_computed_tokens`` on a non-last
+    rank to undo async spec-decode drift after a (partial) draft rejection.
+
+    Async spec decode advances ``num_computed_tokens`` optimistically by
+    ``1 (bonus) + prev_num_draft_len (drafts assumed accepted)``; the true advance is
+    the broadcast ``valid_sampled_count`` (accepted drafts + the bonus). The
+    difference is the number of optimistically-counted drafts that were actually
+    rejected. On the last rank this correction is applied by the GPU kernel
+    ``update_num_computed_tokens_for_batch_change`` from the sampler's valid count;
+    the non-last rank never runs the sampler, so it reconstructs the same correction
+    from the broadcast valid count instead — keeping rope/KV positions identical on
+    every rank (the invariant: advance ``num_computed_tokens`` by the valid count).
+    Non-negative (you cannot accept more drafts than were proposed); ``0`` when every
+    draft was accepted or none were proposed.
+    """
+    return (1 + prev_num_draft_len) - valid_sampled_count
+
+
 def broadcast_sampled_token_ids(
     sampled_token_ids: torch.Tensor, group, src: int
 ) -> None:

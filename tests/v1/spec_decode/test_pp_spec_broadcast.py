@@ -50,7 +50,7 @@ def test_count_valid_sampled_tokens_per_req_non_spec_width_one():
 def test_select_latest_sampled_token_per_req_picks_last_valid_column():
     from vllm.v1.worker.pp_spec_broadcast import select_latest_sampled_token_per_req
 
-    # _SAMPLED: req0 valid=3 -> col2=12; req1 valid=2 -> col1=21; req2 valid=1 -> col0=30.
+    # _SAMPLED: req0 valid=3 -> col2=12; req1 valid=2 -> col1=21; req2 valid=1 -> col0.
     t = torch.tensor(_SAMPLED, dtype=torch.int32)
     assert select_latest_sampled_token_per_req(t).tolist() == [12, 21, 30]
 
@@ -82,7 +82,7 @@ def test_select_latest_sampled_token_per_req_never_returns_sentinel():
 def test_gather_valid_sampled_tokens_per_req_returns_all_valid_in_order():
     from vllm.v1.worker.pp_spec_broadcast import gather_valid_sampled_tokens_per_req
 
-    # _SAMPLED: req0 valid=3 -> [10,11,12]; req1 valid=2 -> [20,21]; req2 valid=1 -> [30].
+    # _SAMPLED: req0 valid=3 -> [10,11,12]; req1 valid=2 -> [20,21]; req2 valid=1 [30].
     t = torch.tensor(_SAMPLED, dtype=torch.int32)
     assert gather_valid_sampled_tokens_per_req(t) == [[10, 11, 12], [20, 21], [30]]
 
@@ -112,6 +112,47 @@ def test_gather_valid_sampled_tokens_per_req_never_contains_sentinel():
     t = torch.tensor(_SAMPLED, dtype=torch.int32)
     flat = [tok for row in gather_valid_sampled_tokens_per_req(t) for tok in row]
     assert -1 not in flat
+
+
+def test_num_computed_tokens_drift_correction_reject_subtracts_one():
+    from vllm.v1.worker.pp_spec_broadcast import (
+        num_computed_tokens_drift_correction,
+    )
+
+    # 1 draft proposed, draft rejected -> only the bonus is valid (v=1). The
+    # optimistic advance counted the draft as accepted, so subtract 1.
+    assert num_computed_tokens_drift_correction(1, 1) == 1
+
+
+def test_num_computed_tokens_drift_correction_accept_subtracts_zero():
+    from vllm.v1.worker.pp_spec_broadcast import (
+        num_computed_tokens_drift_correction,
+    )
+
+    # 1 draft proposed, draft accepted -> draft + bonus valid (v=2). The optimistic
+    # advance was right, so no correction.
+    assert num_computed_tokens_drift_correction(1, 2) == 0
+
+
+def test_num_computed_tokens_drift_correction_no_drafts_is_zero():
+    from vllm.v1.worker.pp_spec_broadcast import (
+        num_computed_tokens_drift_correction,
+    )
+
+    # First decode after prefill: no drafts last step (prev_num_draft_len=0), the
+    # single bonus is valid (v=1). Nothing optimistic was counted -> 0.
+    assert num_computed_tokens_drift_correction(0, 1) == 0
+
+
+def test_num_computed_tokens_drift_correction_partial_accept():
+    from vllm.v1.worker.pp_spec_broadcast import (
+        num_computed_tokens_drift_correction,
+    )
+
+    # 3 drafts proposed, 1 accepted + bonus valid (v=2) -> 2 drafts rejected.
+    assert num_computed_tokens_drift_correction(3, 2) == 2
+    # all 3 accepted + bonus (v=4) -> no correction.
+    assert num_computed_tokens_drift_correction(3, 4) == 0
 
 
 def _broadcast_worker(rank: int, world_size: int, port: int, width: int):

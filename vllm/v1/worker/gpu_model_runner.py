@@ -208,6 +208,7 @@ from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 from vllm.v1.worker.pp_spec_broadcast import (
     broadcast_sampled_token_ids,
     gather_valid_sampled_tokens_per_req,
+    num_computed_tokens_drift_correction,
     receive_sampled_token_ids,
     select_latest_sampled_token_per_req,
 )
@@ -4912,6 +4913,21 @@ class GPUModelRunner(
                 if optimistic:
                     del req_state.output_token_ids[-optimistic:]
                 req_state.output_token_ids.extend(values)
+                # (B, positions arm) num_computed_tokens drift correction — the
+                # non-last-rank analogue of the GPU kernel
+                # update_num_computed_tokens_for_batch_change (:2138), which runs
+                # only on the sampler rank (gated on valid_sampled_token_count_gpu).
+                # The scheduler advanced num_computed_tokens optimistically by
+                # 1 + prev_num_draft_len (all drafts assumed accepted); the true
+                # advance is v. Subtract the rejected drafts here so the else-branch
+                # copy (:2147) feeds self.positions (:2160) the right rope/KV
+                # positions. Without this, every draft rejection leaves the non-last
+                # rank's positions over-advanced by one -> rope off-by-one -> wrong
+                # verification -> non-greedy output.
+                correction = num_computed_tokens_drift_correction(optimistic, v)
+                if correction:
+                    self.input_batch.num_computed_tokens_cpu[i] -= correction
+                    req_state.num_computed_tokens -= correction
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
