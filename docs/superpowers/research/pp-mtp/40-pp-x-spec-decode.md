@@ -875,3 +875,39 @@ rolled-back/synced on the non-last rank); if it ALSO diverges, it's a general GD
 independent of our work. **Scope note:** the shippable contribution is the pure-attention
 PP+MTP plumbing (break#2 + s9 + foundation), proven greedy-equiv + 1.75–1.82× on MiMo and
 27B-speed; the hybrid-GDN-spec correctness is a separate axis/PR.
+
+### s9 27B FIXED — hybrid-GDN num_accepted_tokens on the non-last rank (PP-specific, 3rd s9-pattern instance)
+
+**Followed systematic-debugging.** Phase 1 (root cause, code + isolation): Qwen3.5-27B =
+48 GDN linear-attention (conv1d kernel=4 + fp32 SSM state) + 16 full-attention layers.
+The GDN forward (`qwen_gdn_linear_attn.py:1319`, `causal_conv1d_update`) rolls back its
+conv1d/SSM recurrent state using `attn_metadata.num_accepted_tokens`. That count is set by
+`_update_states_after_model_execute` (`gpu_model_runner.py:1544/1567`) which runs ONLY on
+the sampler/last rank — the non-last rank returns early in `sample_tokens` (`:4482`). So
+the non-last rank's `num_accepted_tokens_cpu` is STALE → its ~24 GDN layers roll back state
+with the wrong count → accept-steps corrupt the recurrent state → wrong verification →
+non-greedy (systematically drops content tokens, e.g. seq4 "\nA.<content>" → "\nA.\n").
+**Isolation (decisive): single-GPU 27B spec == baseline 5/5 (GDN+spec is correct without
+PP) → PP-specific, exactly as predicted. int4==int8 ruled out the draft quant.**
+
+**The bug is the 3rd instance of the s9 pattern** (non-last rank never receives the
+sampler's valid/accepted count): s9-positions fixed `num_computed_tokens`; this fixes
+`num_accepted_tokens`. Pure-attention MiMo has no recurrent state so it was already
+greedy-equiv after the positions fix; only the hybrid 27B exposed this third arm.
+
+**Fix (`bd3ad37b8`):** the receiver sources the same per-request accepted count from the
+broadcast — `num_accepted = (recv != -1).sum(dim=1)` (accepted drafts + bonus) — into
+`num_accepted_tokens_cpu_tensor` and records the event, mirroring the last rank's
+`:1567` gpu→cpu copy. Gated on `model_config.is_hybrid` (default mamba_cache_mode="none"
+→ state shift is forward-driven by num_accepted, no postprocess needed; align/all modes
+would also need the non-last postprocess — out of scope, not used here).
+
+**VERIFIED (gpu-wb, 27B-AWQ PP=2+MTP async, cpu_offload=3, int4 draft):** spec == baseline
+**5/5 token-identical @40 tok** (pre-fix all 5 diverged early). **1.82× faster** (3.37 vs
+1.83 tok/s). single-GPU 27B spec == baseline 5/5 (oracle). **MiMo PP=2 spec still 5/5 (no
+regression — fix gated on is_hybrid).** ruff clean. **NET: both pure-attention (MiMo, s9)
+and hybrid-GDN (Qwen3.5-27B) PP=2+MTP are now greedy-equivalent + ~1.8× faster.** The whole
+greedy-equiv class is three instances of one invariant: *the non-last PP rank must receive
+the sampler's per-request valid/accepted count (broadcast) and apply it to num_computed
+_tokens (positions/KV) AND num_accepted_tokens (mamba/GDN state).* (Caveat: align/all mamba
+cache modes' non-last postprocess untested; "none" is the default and verified.)
