@@ -238,3 +238,26 @@ Detailed evaluation lives in `90-solution-space.md` (not yet written).
   popped after; A1c/standalone-flag Qwen3.5-only→inert for MiMo). GPUs freed. Detail: brick 40
   §Session 8 + runs.md s8. **NEXT (unchanged from the C4 plan) = implement C4 HOLISTIC** (backfill
   `recv[i,0:v]` at `num_computed_tokens` positions + reconcile count at one site) → MiMo oracle.
+- 2026-06-05 (session 8, cont.) — **break#2 CLOSED + greedy-equiv driven from tok2 to tok8-25 (not
+  fully closed).** Long working session. Arc: (1) **C4 HOLISTIC** done — (A) `gather_valid_sampled_tokens_per_req`
+  + receiver writes `recv[i,0:v]` at `[ntns:ntns+v]`, advance by v; (B) trim `output_token_ids` by the
+  `prev_num_draft_len` optimistic placeholders → `num_tokens` stops inflating → discard mask stops
+  mis-firing. **MiMo PP=2+MTP async now RUNS end-to-end (exit=0, first ever).** (2) **sender width-pad**
+  (send s0 is width-1 → receiver read uninit garbage; pad to num_spec+1). (3) **Oracle validated:**
+  baseline ×3 token-identical (deterministic). (4) **Upstream check:** pure origin/main HARD-BLOCKS
+  MTP+PP at load (`NotImplementedError ...SupportsPP`) → not silent corruption; our foundation enables
+  the combo. (5) **greedy-equiv diagnosed PP-specific** (single-GPU MTP ~greedy-equiv 4/5; PP grossly
+  diverged): `scheduled_spec_decode_tokens=[-1]` placeholder + drafter gated to last rank (`:547`) →
+  non-last `_draft_token_ids` None → draft-scatter skipped → embeds -1 at spec position. (6) **FIX
+  draft-broadcast** (`60bedcdb3`): last rank broadcasts `_draft_token_ids`, non-last scatters real
+  drafts (verified IDENTICAL both ranks). (7) drafts are CORRECT but REJECTED → **overlay bug**: the
+  prev_sampled GPU overlay (`_prepare_input_ids` :1794/:1808) fed col 0 = first accepted draft, not the
+  latest committed token. **FIX overlay-latest** (`453e91e3a`): use `select_latest_sampled_token_per_req`.
+  → divergence pushed seq0 tok3→tok8, seq2 tok2→tok25. **RESIDUAL greedy-equiv remains** (seq4@3,
+  seq3@5, seq0@8, seq2@25) — ≥1 more PP-spec issue (single-GPU was 4/5 perfect). **Conventions revised:**
+  commit EVERYTHING freely (incl docs); backups to `fork`; upstream PRs = small sequential bug-by-bug
+  with rationale. Backup branch `backup/pp-mtp-s8-2026-06-05` + feat pushed to fork. **NEXT = pin the
+  first per-seq divergence** (non-last post-overlay GPU input_ids + positions vs a baseline probe;
+  suspects: spec-position rope/positions, attn seq_lens, accepted-draft KV after multi-accept). Strip
+  ALL PPDBG probes (gpu_model_runner.py read/recv/discard/send/draftscatter + gpu_input_batch.py
+  spectok) + run_mimo_dbg/v2/sg.sh before any PR. Detail: brick 40 §Session 8 + runs.md s8-* rows.
