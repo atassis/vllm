@@ -122,9 +122,19 @@ def create_scheduler(
 
     speculative_config: SpeculativeConfig | None = None
     if num_speculative_tokens is not None:
-        speculative_config = SpeculativeConfig(
-            model="ngram", num_speculative_tokens=num_speculative_tokens
-        )
+        if async_scheduling:
+            # The async-scheduling validator rejects CPU `ngram`; it only
+            # accepts EAGLE/MTP/Draft Model/NGram-GPU. Use `ngram_gpu` so the
+            # async+spec config constructs. Scheduler logic is proposer-agnostic
+            # (the proposer runs in the model runner, which these CPU tests
+            # mock), so this does not change scheduling behavior under test.
+            speculative_config = SpeculativeConfig(
+                method="ngram_gpu", num_speculative_tokens=num_speculative_tokens
+            )
+        else:
+            speculative_config = SpeculativeConfig(
+                model="ngram", num_speculative_tokens=num_speculative_tokens
+            )
 
     ec_transfer_config = (
         ECTransferConfig(
@@ -136,11 +146,22 @@ def create_scheduler(
         else None
     )
 
+    if pipeline_parallel_size > 1:
+        # Scheduler logic runs on CPU; allow PP>1 scheduler-logic tests to
+        # construct on hosts with fewer than PP GPUs by skipping the
+        # world-size>GPU-count check (the "mp" backend gates it off).
+        parallel_config = ParallelConfig(
+            pipeline_parallel_size=pipeline_parallel_size,
+            distributed_executor_backend="mp",
+            nnodes=pipeline_parallel_size,
+        )
+    else:
+        parallel_config = ParallelConfig(pipeline_parallel_size=pipeline_parallel_size)
     vllm_config = VllmConfig(
         scheduler_config=scheduler_config,
         model_config=model_config,
         cache_config=cache_config,
-        parallel_config=ParallelConfig(pipeline_parallel_size=pipeline_parallel_size),
+        parallel_config=parallel_config,
         kv_transfer_config=kv_transfer_config,
         speculative_config=speculative_config,
         ec_transfer_config=ec_transfer_config,

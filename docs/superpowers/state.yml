@@ -1,0 +1,143 @@
+# SINGLE SOURCE of mutable state for the PP>1 + MTP spec-decode effort.
+# Render the dashboard:  VIRTUAL_ENV="$(pwd)/.venv" .venv/bin/python docs/superpowers/tools/build_status.py
+# Edit THIS file; never hand-edit generated output. No STATUS.md is committed (would drift).
+# docs/superpowers/ is an untracked work artifact (NOT committed, NOT gitignored).
+# Durable understanding lives in the bricks (research/pp-mtp/*); rows here only POINT to it.
+
+updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
+
+next_action: >
+  C4 GREEDY-EQUIVALENCE, now scoped to a DISTINCT layer: VERIFICATION correctness (NOT my input
+  reconstruction). State after s8: break#2 CLOSED (A value-backfill + B output_token_ids trim + sender
+  width-pad), MiMo PP=2+MTP async RUNS end-to-end (exit=0). Oracle confirmed deterministic (baseline
+  x3 token-identical). The width-pad fixed a real bug (send s0 is width-1 -> receiver read uninit
+  garbage in col1, committed it). BUT the spec output is BYTE-INVARIANT to every non-last
+  reconstruction fix (C4A -> A+B -> width-pad) and still != greedy at ~tok2. DECISIVE: in PP the
+  non-last GPU inputs are overlaid correct in the common case (prev_sampled + draft scatter); the cpu
+  reconstruction only matters for the CRASH (non-common path). So the divergence
+  ([12095,13,315,..] vs greedy [..,1084,..]) is the spec MECHANISM emitting non-greedy tokens = a
+  separate, likely PRE-EXISTING MTP+PP verification/acceptance bug my work doesn't touch (gibberish
+  #36872 class). ISOLATION DONE (s8-iso): single-GPU MTP (pp=1, cpu_offload) is ~greedy-equiv (4/5
+  seqs identical to baseline; seq0 diverges only @tok29 = minor edge) while PP=2 diverges @tok2 on ALL
+  seqs -> **bug is PP-SPECIFIC, not MTP.** ROOT CAUSE PINNED (s8-spectok): scheduled_spec_decode_tokens
+  = [-1] every step (async placeholder); the REAL draft is in _draft_token_ids, set by
+  propose_draft_token_ids only on the LAST rank (drafter gated gpu_model_runner.py:547). On the non-last
+  rank _draft_token_ids is None -> the GPU draft-scatter (:1814) is SKIPPED -> the non-last rank embeds
+  the -1 placeholder at the spec position -> garbage hidden states -> wrong verification on the last rank
+  -> non-greedy acceptance. (BYTE-invariant to C4: C4 fixes the sample position/crash, not the draft
+  embedding.) **FIX = NEW piece (analogous to B1a sampled-token broadcast, DISTINCT from C4): last rank
+  broadcasts its proposed _draft_token_ids to the PP group; non-last rank scatters them into the spec
+  positions in _prepare_input_ids (replacing -1).** Oracle: PP=2 spec == base_a.json (modulo tok29-class
+  edge). Keep A+B+width-pad (close break#2, 24 local green). Remove ALL PPDBG probes (gpu_model_runner.py
+  read/recv/discard/send + gpu_input_batch.py spectok) + run_mimo_dbg/v2/sg.sh before any PR.
+  --- (history: break#2 CLOSED s8 via A+B+width-pad; Q18 V2 resolved s8) ---
+  Q18 RESOLVED (s8, runs.md + brick 40 §Session 8): fork decided = STAY ON V1, finish C4.
+  Static read said V2 is the "right" arch (method "mtp" -> MTPSpeculator; qwen3_5_mtp normalizes
+  to it; MTP+PP>1 explicitly NOT in the V2 unsupported list; quant gate is DEFAULT-only and
+  liftable via VLLM_USE_V2_MODEL_RUNNER=1 - no quant check in _get_v2_model_runner_unsupported_features).
+  BUT the empirical run (MiMo PP=2+MTP async, forced V2) LOADS both ranks + sizes KV (72,448 tok)
+  yet DEADLOCKS during engine construction (EngineCore shm_broadcast stuck 5.5min, Worker_PP1
+  futex_wait, never reaches [OK]/generate; killed, exit 137). So V2 is NOT a free fix: pivoting
+  swaps "finish C4 (root cause pinned, design grounded)" for "debug a fresh V2 PP+MTP deadlock".
+  V2 stays the longer-lived CONTRIBUTION track ([[CMP]]/north-star), not the speedup shortcut.
+  ---
+  => PROCEED: implement C4 HOLISTIC (design GROUNDED by s7 instrumentation, brick 40 §Session 7):
+  in the receiver, backfill the real broadcast values recv[i,0:v] into the v confirmed
+  token_ids_cpu positions INDEXED BY num_computed_tokens (the request's true length) - NOT the
+  single num_tokens_no_spec slot my C4(A) used. The s7 DATA showed: the embedded -1 is the
+  optimistic-extend draft placeholder (:1319), the non-common path reads token_ids_cpu[nc], and
+  C4(A) wrote token_ids_cpu[ntns] (misses it). Reconcile with deferred correct_spec_decode_token_counts
+  (the (B) part; set count at ONE site - B1b over-advanced by double-counting). TDD the position
+  helper (CPU), MiMo greedy-equiv = oracle. Mirrors V2 PPHandler/post_update ported to V1 CPU buffers.
+
+# status vocabulary: done | gate | in_progress | todo | blocked
+deliverables:
+  - id: A1c
+    title: Memory wall (Q13) - int4 draft-embed load-time quant + skip draft lm_head alloc
+    status: done
+    verify: pytest tests/v1/spec_decode/test_quantized_vocab_embedding.py -q
+    last_result: "17 green (s4); real 27B fits PP=2 + reaches generate (cpu_offload_gb=3)"
+    last_verified: 2026-06-05
+    pr: "NOT cut - foundation branch is BEHIND; re-cut A1c from working branch at PR time"
+    pointer: research/pp-mtp/70-memory-and-validation.md
+
+  - id: B1a
+    title: Broadcast transport made width-agnostic (new pp_spec_broadcast.py)
+    status: done
+    verify: pytest tests/v1/spec_decode/test_pp_spec_broadcast.py -q
+    last_result: "3 green incl. 2-rank gloo CPU round-trip; MiMo gets PAST :4653"
+    last_verified: 2026-06-05
+    pr: "NOT cut"
+    pointer: research/pp-mtp/40-pp-x-spec-decode.md  # section: Session 5
+
+  - id: C3
+    title: "Scheduler placeholder discipline (~=upstream #40768) - emit -1 only when req in prev_step_scheduled_req_ids"
+    status: done
+    verify: pytest tests/v1/core/test_async_scheduler.py tests/v1/core/test_scheduler.py -q
+    last_result: "async_scheduler+broadcast 17 green; test_scheduler 101/101; ruff clean"
+    last_verified: 2026-06-05
+    pr: "NOT cut - necessary-but-not-sufficient for break #2 (Q16=NO); valid standalone hardening"
+    pointer: research/pp-mtp/81-typing-and-rewrite-contribution.md  # chunk C3
+
+  - id: C4
+    title: Holistic NON-last-rank input reconstruction - back-write the real broadcast value into token_ids_cpu (never -1), modeled on the V2 PPHandler blueprint
+    status: in_progress     # break#2 CLOSED (s8: A+B+width-pad, runs e2e exit=0); greedy-equiv fails but is a SEPARATE verification-correctness layer (output invariant to non-last fixes)
+    verify: "unit: pytest tests/v1/spec_decode/test_pp_spec_broadcast.py -q (10 green incl. gather_valid x4). INTEGRATION oracle: MiMo PP=2+MTP async on gpu-wb -> break#2 gone + generate completes + greedy-equiv -> 27B vs base.json"
+    last_result: "break#2 CLOSED (s8). (A) gather_valid_sampled_tokens_per_req helper + receiver writes recv[i,0:v] at token_ids_cpu[ntns:ntns+v], advance ntns by v. (B) receiver trims output_token_ids by the prev_num_draft_len optimistic-extend(:1319) placeholders then extends recv[i,0:v] -> num_tokens stops inflating -> discard_request_mask(:2045) no longer mis-fires. RESULT: MiMo PP=2+MTP async runs END-TO-END, exit=0, 5x40 tok (first ever); discard=False every step. BUT GREEDY-EQUIV FAILS: spec output diverges from mimo_base.json at ~token 2 (seq0 base[12095,13,1084] vs spec[12095,13,315]). Lead: recv[s1]col1=0 written at pos6 where true 2nd committed token=13 -> bad target context -> draft 315 wrongly accepted (out[2], base=1084). Grid-content/step-alignment of sampler_output.sampled_token_ids is the next gate. Local: 24 green, ruff clean. UPDATE: sender width-pad added (send s0 is width-1 -> receiver read uninit garbage; pad to num_spec+1 with -1) - fixed that real bug (recv s1 now [12095,-1]) BUT output BYTE-INVARIANT to it and to all non-last fixes -> greedy-equiv divergence is a SEPARATE pre-existing MTP+PP verification bug, not the reconstruction. Baseline x3 deterministic (oracle valid)."
+    last_verified: 2026-06-05
+    pr: "-"
+    pointer: research/pp-mtp/40-pp-x-spec-decode.md  # sections: F2/C4 + Session 7 (V2 blueprint)
+
+  - id: ALT
+    title: "Alternative track - single-GPU MTP (no PP): draft shares the target embed (world_size==1 -> _maybe_share_embeddings WORKS, unlike PP) + quantize the SHARED embed; sidesteps the whole PP non-last-rank cascade"
+    status: todo
+    verify: "single-GPU greedy-equiv (already PASS on opt-125m); then MiMo/27B-quant single GPU"
+    last_result: "idea (s7, user): inverts A1c - 'share, and quantize the shared one' instead of 'quantize because we cannot share'"
+    last_verified: "-"
+    pr: "-"
+    pointer: specs/2026-06-05-work-branches.md
+
+  - id: CMP
+    title: "NORTH STAR - head-to-head benchmark: SAME model, PP=2 (2 GPU) [C4 path] vs single-GPU MTP [ALT], and/or same model across quants. tokens/s + acceptance + quality"
+    status: todo
+    verify: "benchmark harness on gpu-wb; oracle = greedy-equiv holds in both"
+    last_result: "not started; both arms must run first"
+    last_verified: "-"
+    pr: "-"
+    pointer: specs/2026-06-05-work-branches.md
+
+# Local green-gate to run before any GPU work (copy/paste):
+green_check:
+  - VIRTUAL_ENV="$(pwd)/.venv" .venv/bin/python -m pytest tests/v1/core/test_async_scheduler.py tests/v1/spec_decode/test_pp_spec_broadcast.py -q
+  - VIRTUAL_ENV="$(pwd)/.venv" .venv/bin/python -m ruff check vllm/v1/core/sched/ vllm/v1/request.py vllm/v1/worker/pp_spec_broadcast.py
+
+uncommitted_set: >
+  Coherent working set on feat/pp-mtp-spec-decode: B1a (gpu_model_runner.py + pp_spec_broadcast.py
+  + test_pp_spec_broadcast.py) + C3 (request.py/scheduler.py/async_scheduler.py + test_async_scheduler.py)
+  + test infra (tests/v1/core/utils.py) + brick-40 probe (test_pp_spec_batch_queue.py). A1c is in the
+  branch tip commits (e45e5d462). docs/superpowers/ untracked.
+
+# Open questions. "answer" rows carry a pointer to the brick that holds the real finding.
+questions:
+  - {id: Q1,  text: "PP/TP group creation + what is shared",                          brick: 10, status: answered}
+  - {id: Q2,  text: "Where embed_tokens weights live under PP",                        brick: 20, status: answered}
+  - {id: Q3,  text: "MTP draft has own embed weight-loaded on every rank?",            brick: 20, status: "answered: YES"}
+  - {id: Q4,  text: "Draft forward can avoid the global PP group?",                    brick: 60, status: "closed: standalone flag"}
+  - {id: Q5,  text: "What tensor feeds the MTP draft, on which rank",                  brick: 30, status: "answered: target final hidden states, last rank"}
+  - {id: Q6,  text: "Design B backward rank1->rank0 dependency?",                      brick: 30, status: "open (likely yes -> B demoted)"}
+  - {id: Q7,  text: "Explicit PP layer split available?",                             brick: 10, status: "answered: VLLM_PP_LAYER_PARTITION"}
+  - {id: Q8,  text: "Drafter output -> scheduler under batch_queue; where it breaks",  brick: 40, status: "open - the B1 cascade; B1a done, C4 = gate"}
+  - {id: Q9,  text: "Last-rank drafter has target hidden state resident?",             brick: 30, status: "answered: YES (zero-copy)"}
+  - {id: Q10, text: "Own vs shared draft KV; block-table/slot sharing",                brick: 30, status: "answered: own KV, shares tables/slot"}
+  - {id: Q11, text: "Rejection rollback mechanism",                                   brick: 30, status: "answered: unified via shared seq_lens"}
+  - {id: Q12, text: "Reuse state to cut compute/memory beyond MTP",                    brick: 30, status: "nuanced: cross-model KV share inapplicable to Qwen"}
+  - {id: Q13, text: "Last-rank headroom for the whole draft (Design C risk)",          brick: 70, status: "SOLVED (A1c, validated 27B)"}
+  - {id: Q14, text: "Tiny synthetic Qwen3.5 -> GDN/mamba or pure attn?",               brick: 70, status: "open (MiMo non-hybrid sidesteps it)"}
+  - {id: Q15, text: "MiMo PP=2+MTP under draft_pp=1 w/o SupportsPP?",                  brick: 70, status: "closed: YES (s5)"}
+  - {id: Q16, text: "Do C3+B1a fully close break #2 for MTP+PP?",                       brick: 40, status: "ANSWERED: NO (s6) - root -1 is worker-side"}
+  - {id: Q17, text: "MTP num_tokens_no_spec correct w/o the ngram-gated advance?",     brick: 80, status: "open - = the C4 (B) question; instrumentation resolves"}
+  - {id: Q18, text: "Pivot to V2 runner instead of fixing V1 C4? (a) does V2 spec support MTP (b) quant gate hard-or-soft (c) Qwen3.5 arch supportable", brick: 40, status: "RESOLVED (s8) = NO pivot, stay on V1. (a) YES - method 'mtp' -> MTPSpeculator, qwen3_5_mtp normalizes to it, MTP+PP>1 NOT in V2 unsupported-list. (b) SOFT - quant excluded only in default-select _is_default_v2_model_runner_model:558; absent from hard _get_v2_model_runner_unsupported_features; liftable via VLLM_USE_V2_MODEL_RUNNER=1. (c) gate soft but Qwen3_5ForConditionalGeneration arch untested. EMPIRICAL: forced-V2 MiMo PP=2+MTP DEADLOCKS at construction (shm_broadcast/futex, never [OK]). => V2 not a shortcut; C4-on-V1 shorter for speedup; V2 = longer-lived contribution track."}
+
+# gpu-wb empirical runs are logged in runs.md (one row each).
+# Older session narrative + superseded specs are in archive/ (cold; full pre-image in
+# ~/Nextcloud/Obsidian/Projects/local-llm-oset-nas/pp-mtp-kb/).
