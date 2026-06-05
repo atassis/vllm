@@ -108,3 +108,35 @@ because it lacked this.
 
 → This turns "fix one model's PP+MTP" into "harden + type + test vLLM's spec-under-PP
 path" — the bigger contribution the stakeholder wants.
+
+## Session 9 — stakeholder's recurring "rewrite from scratch with AI" question (recorded)
+
+The stakeholder asked again (s9): *given how subtle these bugs are, is it viable to
+have an AI write a clean spec from scratch and use it across the project — fully, or at
+least some part?* Recorded with the s9 root-cause as concrete evidence.
+
+**Assessment (honest, evidence-based):**
+- **Full pipeline rewrite — NOT viable** (unchanged from s5): the async scheduler +
+  batch_queue + PP + sampler glue is >1000-commit cross-cutting churn that must compose
+  with every model/backend. A from-scratch parallel implementation can't track upstream
+  and won't land.
+- **BUT the s9 bug is the strongest argument yet FOR the surgical version of the idea.**
+  Both break#2 (s8) and the s9 position bug are the SAME shape: the spec-decode token
+  *accounting* (num_computed_tokens / num_tokens_no_spec / output_token_ids / valid
+  counts, replicated across ranks) has **no explicit contract** — it's implicit
+  invariants smeared across `_update_states`, `_prepare_inputs`, the receiver, and the
+  sampler-rank correction. The async "optimistic-then-correct" pattern makes it worse:
+  the truth is reconstructed late, on one rank, and the others were simply never wired.
+- **So the live, high-value path is NOT "rewrite the forward" but "own + spec the STATE
+  sub-mechanism":** extract the spec-decode token-accounting into a typed, unit-tested
+  module with ONE enforced invariant — *num_computed_tokens (and the dependent
+  positions/seq_lens/output) advances by the per-request valid count, identically on
+  every PP rank* — that is impossible to drive into an inconsistent state. That is the
+  C0/C1 work (brick 81), it directly *closes the class* that produced these bugs, and it
+  is a real upstream contribution (fills the gap that made MTP+PP a `NotImplementedError`).
+  Partial, contract-first, surgical — yes. Whole-cloth AI rewrite of the pipeline — no.
+
+**Sequencing:** finish the s9 fix (small, mechanical, closes the immediate greedy-equiv
+gap) → that gives a *worked example* of the invariant → then the C0/C1 typed state model
+is "extract the invariant we just hand-proved," not a speculative redesign. The bug pays
+for the spec.

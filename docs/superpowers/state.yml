@@ -7,18 +7,27 @@
 updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
 
 next_action: >
-  GREEDY-EQUIV RESIDUAL. Three fixes landed this layer (all committed on feat): draft-broadcast
-  (60bedcdb3 — last rank broadcasts _draft_token_ids, non-last scatters real drafts; draftscatter
-  verified IDENTICAL both ranks) + overlay-latest (453e91e3a — prev_sampled GPU overlay :1794/:1808
-  used col 0 = first accepted draft; now uses select_latest = latest committed token, fixing the
-  multi-accept sample position) + earlier C4/width-pad. Effect: divergence pushed tok2-everywhere ->
-  seq0 tok8 (first 8 == baseline), seq2 tok25, seq1@6 seq3@5 seq4@3. NOT fully closed: single-GPU MTP
-  was 4/5 perfect, so >=1 PP-spec residual remains (clean compare, both PP=2 no-offload). NEXT: pin the
-  first per-seq divergence — instrument the non-last rank's FULL post-overlay GPU input_ids + positions
-  at the failing step vs a baseline-run probe; suspects = spec-position rope/positions, attention
-  seq_lens, or accepted-draft KV after multi-accept. Some tail diffs may be the tok29-class near-tie
-  edge single-GPU also showed. Oracle: PP=2 spec == base_a.json, then 27B vs base.json. Strip ALL PPDBG
-  probes + run_mimo_dbg/v2/sg.sh before PR.
+  GREEDY-EQUIV — FIRST DIVERGENCE ROOT-CAUSED (s9), FIX DESIGNED, IMPLEMENT NEXT. Reproduced
+  (run_mimo_dbg spec, no-offload): per-seq first divergence seq4@out3, seq3@5, seq1@6, seq0@8,
+  seq2@25 (deterministic, == s8). Dissected seq4@out3 via PPDBG trajectory (max_num_seqs=1 → clean
+  per-seq): s94 pos[8,9] reject -> commit 13708 (out1=pos9); s95 pos[10,11] feeds 13708 at rope
+  pos 10 (true pos 9!) + draft 766 at pos 11 (true 10) -> bonus predicted for "766@pos11"=29 not
+  "766@pos10"=397. ROOT CAUSE (every site pinned, brick40 §S9): async spec advances counts
+  optimistically (gpu_model_runner.py:1319/1342/1408) and corrects after the forward via the GPU
+  kernel update_num_computed_tokens_for_batch_change (:2138), GATED on valid_sampled_token_count_gpu
+  (:2128) which is produced ONLY by the sampler (:4986 = last rank). On the non-last rank it is None
+  -> correction SKIPPED -> num_computed_tokens stays optimistic -> positions/KV over-advance by the
+  rejected-draft count after every rejection -> rope off-by-one -> wrong verification -> non-greedy.
+  Single-GPU = last rank has the sampler -> gets the correction -> the s8-iso 4/5 result. PP-specific,
+  exactly as predicted. FIX (analogous to B1a/C4, distinct arm): on the non-last rank reconstruct
+  valid_sampled_token_count_gpu (+ prev_num_draft_tokens / prev_positions the kernel reads) from the
+  BROADCAST valid counts already computed in the receiver (gather_valid_sampled_tokens_per_req ->
+  v=len(gathered[i])), so :2138 fires IDENTICALLY on both ranks. One invariant: num_computed_tokens
+  advances by the valid count, same per rank. TDD the count-reconstruction (CPU). Oracle: PP=2 spec ==
+  base_a.json modulo tok29-class near-tie edge, then 27B vs base.json. Strip ALL PPDBG probes +
+  run_mimo_dbg/v2/sg.sh before PR. (Bug nature: feature-interaction gap, not Python-async/sloppiness —
+  the correction hook exists, it's just fed None on non-last ranks; reinforces the brick-81 typed
+  spec-decode-accounting-state-machine contribution thesis, see brick81 §S9.)
   --- (history below: greedy-equiv was scoped to VERIFICATION layer; break#2 CLOSED via A+B+width-pad) ---
   C4 GREEDY-EQUIVALENCE, now scoped to a DISTINCT layer: VERIFICATION correctness (NOT my input
   reconstruction). State after s8: break#2 CLOSED (A value-backfill + B output_token_ids trim + sender

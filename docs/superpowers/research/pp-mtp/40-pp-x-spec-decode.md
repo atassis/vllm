@@ -732,3 +732,65 @@ green" — disciplined, not symptom-chasing.
 - **Q13 — MITIGATED:** `VLLM_PP_LAYER_PARTITION` rebalances layers off the last
   rank to fit the draft. Stakeholder idea, built-in knob.
 - **Q7 — now actionable:** uneven split is exactly the lever for Q13.
+
+## Session 9 — greedy-equiv FIRST divergence ROOT-CAUSED: non-last rank skips the async position correction (2026-06-05)
+
+**Reproduced** (run_mimo_dbg MODE=spec, no-offload): per-seq first divergence vs
+`mimo_base.json` = seq4@out3, seq3@5, seq1@6, seq0@8, seq2@25 (exactly as s8).
+Deterministic. Dissected the EARLIEST + cleanest: **seq4@out3** (prompt 8 tok).
+
+**Probe trajectory (max_num_seqs=1 → seqs run one-at-a-time, clean per-seq):**
+```
+s93 prefill pos[0..7]              -> sample 4710        (out0 = pos8)
+s94 pos[8,9]  feed[4710, draft61797] reject(≠13708)     -> commit 13708 (out1 = pos9)
+s95 pos[10,11] feed[13708,draft766]  accept(766) bonus29 -> commit 766(out2),29(out3) ✗
+```
+Base out3 = 397, spec = 29. **Smoking gun:** token 13708 is the true sequence
+pos **9** (out1), but at s95 it is fed at rope position **10**, and the draft 766
+(true pos 10) at position **11** — every position shifted **+1**. The bonus is then
+predicted for "766 at pos 11" = 29 instead of "766 at pos 10" = 397.
+
+**Confirming pattern — `num_computed_tokens` advance is INVERTED on the non-last rank:**
+reject (1 tok committed) → nct += 2; accept (2 tok) → nct += 1. (Should be the
+reverse: advance by the *valid* count.) The +1 error appears on the step *after* a
+rejection, corrupts exactly one bonus token, then "self-heals" on the next accept —
+which is why each seq diverges at a different out-index (wherever its first
+rejection-then-accept lands).
+
+**ROOT CAUSE (every site pinned):** async spec decode advances counts optimistically
+(all drafts accepted) in `_update_states` (`gpu_model_runner.py:1319` extend `-1`s,
+`:1342/:1408` set `num_computed_tokens` = scheduler's optimistic value) and *corrects
+after the forward* via the GPU kernel `update_num_computed_tokens_for_batch_change`
+(`:2138`). That correction is **gated on `self.valid_sampled_token_count_gpu`**
+(`:2128-2132`), which is produced ONLY by the sampler in `_copy_valid_sampled_token_count`
+(`:4986`) — i.e. **only on the last rank**. On the non-last rank it is `None`, so the
+correction is skipped and `num_computed_tokens` is copied straight from the optimistic
+CPU values (`:2147`). ⇒ the non-last rank's positions/KV-slots over-advance by the
+rejected-draft count after every rejection. Single-GPU MTP (= last rank, has the
+sampler) gets the correction → greedy-equiv (the s8-iso 4/5 result). **PP-specific,
+exactly as s8 predicted; mechanism now fully grounded.**
+
+**FIX (designed, analogous to B1a/C4 — distinct piece): drive the SAME correction on
+the non-last rank from the BROADCAST valid counts.** The receiver already computes
+per-req valid counts (`gather_valid_sampled_tokens_per_req(recv)` → `gathered`, `v =
+len(gathered[i])`) purely from the broadcast. Reconstruct `valid_sampled_token_count_gpu`
+(and the `prev_num_draft_tokens` / `prev_positions` the kernel reads) on the non-last
+rank from those `v`, so `update_num_computed_tokens_for_batch_change` (`:2138`) fires
+**identically on both ranks**. One code path, one invariant: *num_computed_tokens
+advances by the valid count, the same on every rank.* (The existing C4(B) receiver
+already does the analogous reconcile for `num_tokens_no_spec` + `output_token_ids`;
+this adds the missing `num_computed_tokens` arm.) Oracle: PP=2 spec == `base_a.json`
+modulo the tok29-class near-tie edge. TDD the count-reconstruction (CPU helper).
+
+**Nature of the bug (for the record):** NOT a Python-async artifact and NOT careless
+code — it is a *feature-interaction gap*. Async-spec-decode's optimistic-then-correct
+accounting was wired for the co-located sampler (single GPU / last rank); PP splits the
+sampler onto one rank only, so the correction's input doesn't exist on the others. The
+hook (the GPU kernel) is even present — it is just fed `None`. Silent (wrong numbers,
+no crash), so it only surfaces as non-greedy output — the hardest class to catch. This
+is precisely why upstream HARD-BLOCKS MTP+PP (`SupportsPP NotImplementedError`): the
+combo was never finished. Our foundation (A1c+B1a+C3+C4) enables it; this is the last
+structural accounting arm. → reinforces the brick-81 thesis: the highest-value
+contribution is an explicit, typed, tested **spec-decode token-accounting state
+machine** (one invariant: "advance by valid count, identically per rank") — not a
+pipeline rewrite. See `81-typing-and-rewrite-contribution.md` + the s9 strategy note.
