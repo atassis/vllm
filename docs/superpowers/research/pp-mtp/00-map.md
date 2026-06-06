@@ -261,3 +261,35 @@ Detailed evaluation lives in `90-solution-space.md` (not yet written).
   suspects: spec-position rope/positions, attn seq_lens, accepted-draft KV after multi-accept). Strip
   ALL PPDBG probes (gpu_model_runner.py read/recv/discard/send/draftscatter + gpu_input_batch.py
   spectok) + run_mimo_dbg/v2/sg.sh before any PR. Detail: brick 40 §Session 8 + runs.md s8-* rows.
+
+### Session 9–10 (2026-06-05/06) — GREEDY-EQUIV CLOSED → CLEAN BRANCH → SHIPPED (RFC #44697 + PR #44698)
+
+**S9 closed greedy-equiv (both arms):** non-last rank skipped the optimistic-`num_computed_tokens`
+GPU-kernel correction (`update_num_computed_tokens_for_batch_change`, gated on
+`valid_sampled_token_count_gpu` = sampler/last-rank only) → rope off-by-one after each rejection
+(fix `8105121a9`, drift correction in `_update_states`); hybrid arm = same on `num_accepted_tokens`
+(GDN conv1d/SSM rollback, last-rank only; fix `bd3ad37b8`, gated `is_hybrid`). One invariant: non-last
+rank applies the broadcast per-req valid/accepted count to BOTH counters.
+
+**S10 built the shippable artifact and opened it.** Clean branch `feat/mtp-pipeline-parallel-spec-decode`
+from current `origin/main` (NOT the messy foundation): 6 commits (A1c → B1a → C4 → s9-pos → s9-gdn →
+experimental-`warning_once`), NO docs/probes, **C3 OMITTED** (it's 1:1 with @z1ying's #40768 — verified
+51/51 lines; `Complements`-not-depends, proven by reverting C3 and by batch=16 holding no-crash+exact-
+length). s9-pos/s9-gdn split reliably via reverse-apply of the two clean commits (final
+`gpu_model_runner.py` sha == feat-final). `git rebase origin/main` (+52 commits) NO conflicts; ruff +
+**31 CPU tests** green. **Full re-validation on current main, ALL GREEN:** MiMo+27B k=1/2/3 5/5; align
+5/5; fp8 5/5; chunked 5/5; sampling temp0.8+seed deterministic; batch=16 no-crash+exact-length; long-256
+3-way = fp near-tie floor (PP not worse than single-GPU). 1.68–1.89×, 94.7% accept (27B).
+
+**Process artifacts** (in `pr-prep/`, humanized + soft-wrapped, em-dashes stripped): `03-pr-FINAL.md`
+(PR body, template-compliant: Purpose/Root-cause-with-file:line/why-not-duplicate/Test/folded matrix +
+MRV2/checklist), `04-design-issue.md` (RFC by template fields), `01b` (posted to #40768), `02` (drafts).
+**RFC #44697 + PR #44698 OPENED.** CI: DCO pass; `pre-run-check` fail = EXPECTED new-contributor gate
+(needs maintainer `ready` label; author 0 merged PRs); readthedocs fail likely unrelated. **Sibling
+#44142** (same optimistic `num_computed_tokens` drift breaks structured-output `</think>` detection) =
+independent evidence for the typed-contract thesis (brick-81 C0/C1). **gpu-wb** left on branch `reval` =
+PR code; harness `e3_run.py` extended (BATCH_MULT/TEMP/SEED/IGNORE_EOS/MAMBA_CACHE_MODE/CHUNK_PROMPT),
+untracked. Docs now live in WORKTREE `~/repositories/ns/ai/vllm-kb`; main repo dir = clean code branch.
+
+**NEXT = WAIT for reviewer / `ready` label, then answer review + fix as needed.** Pending user nits:
+RFC #44697 title still bare `[RFC]:`; PR auto-closes only #36643 (each issue needs its own `closes`).

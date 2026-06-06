@@ -4,9 +4,24 @@
 # docs/superpowers/ is an untracked work artifact (NOT committed, NOT gitignored).
 # Durable understanding lives in the bricks (research/pp-mtp/*); rows here only POINT to it.
 
-updated: 2026-06-05            # session 8 (Q18 resolved + C4(A) hw-confirmed; (B) count = last gate)
+updated: 2026-06-06            # session 10 (SHIPPED: clean branch + RFC #44697 + PR #44698)
 
 next_action: >
+  S10 (2026-06-06) — SHIPPED, AWAITING REVIEW. Clean branch
+  `feat/mtp-pipeline-parallel-spec-decode` (6 commits, NO C3/docs/probes, rebased on current
+  origin/main, ruff + 31 CPU tests green) pushed to fork. RFC #44697 + PR #44698 OPENED (base
+  main). Full validation on current main ALL GREEN: MiMo+27B k=1/2/3 5/5, align 5/5, fp8 5/5,
+  chunked 5/5, sampling deterministic, batch=16 no-crash+exact-length, long-256 = fp near-tie
+  floor (not PP bug). C3 == #40768 (1:1, OMITTED; Complements-not-depends, proven at batch=16).
+  A warning_once gates MTP+PP>1 as experimental. Artifacts: PR body = pr-prep/03-pr-FINAL.md,
+  RFC = pr-prep/04-design-issue.md (humanized, soft-wrapped). CI: DCO pass; pre-run-check "fail"
+  = EXPECTED new-contributor gate (needs maintainer `ready` label; author has 0 merged PRs);
+  readthedocs fail likely unrelated. Sibling #44142 = same optimistic num_computed_tokens drift
+  breaks structured-output </think> detection (evidence for the typed-contract thesis).
+  RETURN-TRIGGER = reviewer responds / `ready` label added -> then answer review + fix as needed.
+  Two pending user nits: RFC #44697 title still bare "[RFC]:" (needs descriptive title); PR
+  "closes #36643, #36872" only auto-closes #36643 (each needs its own keyword).
+  --- (prior next-action history below) ---
   ALL ENGINEERING DONE through s9; remaining = PR SERIES. Greedy-equiv closed for pure-attention
   (MiMo) AND hybrid-GDN (27B) PP=2+MTP; ~94% MTP acceptance -> 1.74-1.88x; fix generalizes to
   num_spec=2,3 (k=2 sweet spot). CLEANUP DONE (s9): all 6 PPDBG probes stripped (verified MiMo
